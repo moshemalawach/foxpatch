@@ -1,0 +1,24 @@
+[
+  {
+    "number": 100,
+    "title": "Add user avatar support",
+    "body": "Implements avatar upload and display",
+    "author": {"login": "contributor1"},
+    "headRefOid": "abc123def456",
+    "headRefName": "feature/avatar",
+    "baseRefName": "main",
+    "labels": [],
+    "isDraft": false
+  },
+  {
+    "number": 101,
+    "title": "WIP: Refactor auth",
+    "body": "Draft refactoring of auth module",
+    "author": {"login": "dev2"},
+    "headRefOid": "def789abc012",
+    "headRefName": "refactor/auth",
+    "baseRefName": "main",
+    "labels": [],
+    "isDraft": true
+  }
+]

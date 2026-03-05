@@ -1,0 +1,68 @@
+github:
+  orgs:
+    - name: aleph-im
+      repos: []              # empty = all non-archived repos
+    - name: Libertai
+      repos: []
+  labels:
+    trigger: "autodev"
+    in_progress: "autodev:in-progress"
+    done: "autodev:done"
+    failed: "autodev:failed"
+  poll_interval_issues: 120  # seconds
+  poll_interval_prs: 180
+  review:
+    enabled: true
+    skip_bot_prs: false
+    skip_authors: []
+    re_review_on_push: true
+
+repo_groups:
+  aleph-core:
+    description: "Core aleph network"
+    repos: [aleph-im/pyaleph, aleph-im/aleph-vm, aleph-im/aleph-cvm, aleph-im/aleph-message]
+    primary: aleph-im/pyaleph
+  aleph-sdk:
+    description: "SDK packages"
+    repos: [aleph-im/aleph-sdk-python, aleph-im/aleph-sdk-ts, aleph-im/aleph-client]
+    primary: aleph-im/aleph-sdk-python
+  aleph-frontend:
+    description: "Frontend apps"
+    repos: [aleph-im/front-aleph-cloud-page, aleph-im/front-core, aleph-im/front-backoffice]
+    primary: aleph-im/front-aleph-cloud-page
+  libertai-stack:
+    description: "Libertai core services"
+    repos: [Libertai/libertai-agents, Libertai/libertai-inference, Libertai/libertai-api, Libertai/libertai-models]
+    primary: Libertai/libertai-agents
+
+claude:
+  model: "sonnet"
+  model_for_issues: "opus"
+  model_for_reviews: "sonnet"
+  max_turns: 50
+  max_budget_usd: 5.0
+  max_budget_usd_review: 1.0
+  timeout_seconds: 1800
+  allowed_tools:
+    - Read
+    - Edit
+    - Write
+    - Glob
+    - Grep
+    - "Bash(git *)"
+    - "Bash(python *)"
+    - "Bash(npm *)"
+    - "Bash(cargo *)"
+  append_system_prompt: |
+    You are working on the aleph.im / Libertai ecosystem.
+    Follow existing code style. Write tests for new functionality.
+
+concurrency:
+  max_parallel_tasks: 3
+  max_parallel_reviews: 5
+  workspace_base_dir: "/tmp/foxpatch"
+
+logging:
+  level: "INFO"
+  file: null
+  format: "json"

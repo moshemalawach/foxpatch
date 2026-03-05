@@ -1,0 +1,20 @@
+[
+  {
+    "number": 42,
+    "title": "Fix login bug",
+    "body": "Users cannot log in when password contains special chars",
+    "labels": [
+      {"name": "autodev"},
+      {"name": "bug"}
+    ]
+  },
+  {
+    "number": 43,
+    "title": "Add dark mode",
+    "body": "Implement dark mode toggle",
+    "labels": [
+      {"name": "autodev"},
+      {"name": "autodev:in-progress"}
+    ]
+  }
+]

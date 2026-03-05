@@ -1,0 +1,27 @@
+[Unit]
+Description=foxpatch: Automated Issue Resolution & PR Review Orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=autodev
+Group=autodev
+WorkingDirectory=/opt/foxpatch
+ExecStart=/opt/foxpatch/venv/bin/foxpatch --config /etc/foxpatch/config.yaml
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=60
+
+Environment=HOME=/home/autodev
+Environment=PATH=/opt/foxpatch/venv/bin:/usr/local/bin:/usr/bin:/bin
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/tmp/foxpatch /home/autodev
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target

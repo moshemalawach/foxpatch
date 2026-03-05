@@ -1,0 +1,39 @@
+github:
+  orgs:
+    - name: test-org
+      repos: []
+  labels:
+    trigger: "autodev"
+    in_progress: "autodev:in-progress"
+    done: "autodev:done"
+    failed: "autodev:failed"
+  poll_interval_issues: 60
+  poll_interval_prs: 60
+  review:
+    enabled: true
+    skip_bot_prs: true
+    skip_authors: []
+    re_review_on_push: true
+
+claude:
+  model: "sonnet"
+  model_for_issues: "sonnet"
+  model_for_reviews: "sonnet"
+  max_turns: 10
+  max_budget_usd: 1.0
+  max_budget_usd_review: 0.5
+  timeout_seconds: 300
+  allowed_tools:
+    - Read
+    - Edit
+    - Write
+  append_system_prompt: "Test prompt"
+
+concurrency:
+  max_parallel_tasks: 2
+  max_parallel_reviews: 3
+  workspace_base_dir: "/tmp/foxpatch-test"
+
+logging:
+  level: "DEBUG"
+  format: "text"
