@@ -5,14 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from foxpatch.claude_runner import ClaudeRunner
 from foxpatch.config import AppConfig
 from foxpatch.github_client import GitHubClient
 from foxpatch.models import ClaudeResult, GitHubPR, PRReview, Workspace
 from foxpatch.revision_worker import RevisionWorker
 from foxpatch.workspace import WorkspaceManager
-
-import pytest
 
 
 @pytest.fixture
@@ -47,7 +47,13 @@ async def test_needs_revision_not_autodev_pr(
 async def test_needs_revision_already_revised(
     revision_worker: RevisionWorker, autodev_pr: GitHubPR,
 ) -> None:
-    revision_worker.mark_seen(autodev_pr)
+    revision_worker.github.get_pr_reviews = AsyncMock(return_value=[
+        PRReview(
+            author="reviewer", state="CHANGES_REQUESTED",
+            body="Fix tests", commit_sha="abc123",
+        ),
+    ])
+    await revision_worker.mark_seen(autodev_pr)
     assert await revision_worker.needs_revision(autodev_pr) is False
 
 
@@ -73,19 +79,38 @@ async def test_needs_revision_with_changes_requested(
     assert await revision_worker.needs_revision(autodev_pr) is True
 
 
-async def test_needs_revision_with_ci_failures(
+async def test_needs_revision_with_ci_failures_only(
     revision_worker: RevisionWorker, autodev_pr: GitHubPR,
 ) -> None:
-    # No REQUEST_CHANGES reviews on current head, but has CI failures
+    # REQUEST_CHANGES review exists but already revised — CI failures alone
+    # should NOT re-trigger (this prevents loops after push)
     revision_worker.github.get_pr_reviews = AsyncMock(return_value=[
         PRReview(
             author="reviewer", state="CHANGES_REQUESTED",
             body="Fix tests", commit_sha="old-sha",
         ),
     ])
-    revision_worker.github.get_pr_check_failures = AsyncMock(return_value=[
-        {"name": "test-docker", "conclusion": "FAILURE"},
+    # Mark as already revised with 1 CHANGES_REQUESTED review
+    revision_worker._revised[revision_worker._revision_key(autodev_pr)] = 1
+    assert await revision_worker.needs_revision(autodev_pr) is False
+
+
+async def test_needs_revision_new_review_after_revision(
+    revision_worker: RevisionWorker, autodev_pr: GitHubPR,
+) -> None:
+    # A NEW REQUEST_CHANGES review after our revision should re-trigger
+    revision_worker.github.get_pr_reviews = AsyncMock(return_value=[
+        PRReview(
+            author="reviewer1", state="CHANGES_REQUESTED",
+            body="Fix tests", commit_sha="old-sha",
+        ),
+        PRReview(
+            author="reviewer2", state="CHANGES_REQUESTED",
+            body="Also fix docs", commit_sha="new-sha",
+        ),
     ])
+    # We previously revised when there was only 1 review
+    revision_worker._revised[revision_worker._revision_key(autodev_pr)] = 1
     assert await revision_worker.needs_revision(autodev_pr) is True
 
 
@@ -156,6 +181,13 @@ async def test_revise_pr_claude_fails(
 async def test_mark_seen(
     revision_worker: RevisionWorker, autodev_pr: GitHubPR,
 ) -> None:
-    revision_worker.mark_seen(autodev_pr)
+    revision_worker.github.get_pr_reviews = AsyncMock(return_value=[
+        PRReview(
+            author="reviewer", state="CHANGES_REQUESTED",
+            body="Fix tests", commit_sha="abc123",
+        ),
+    ])
+    await revision_worker.mark_seen(autodev_pr)
     key = revision_worker._revision_key(autodev_pr)
     assert key in revision_worker._revised
+    assert revision_worker._revised[key] == 1

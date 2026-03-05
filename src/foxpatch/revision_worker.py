@@ -29,18 +29,21 @@ class RevisionWorker:
         self.github = github
         self.claude = claude
         self.workspaces = workspaces
-        # Track which (repo, pr_number, head_sha) we've already revised.
-        # If head_sha matches, the review feedback hasn't been addressed yet
-        # (or we already pushed fixes and the sha changed).
-        self._revised: set[tuple[str, int, str]] = set()
+        # Track which (repo, pr_number) we've already revised, and how many
+        # CHANGES_REQUESTED reviews existed when we last revised.  A new review
+        # (higher count) will re-trigger revision.
+        self._revised: dict[tuple[str, int], int] = {}
         self._MAX_REVISED_SIZE = 5_000
 
-    def _revision_key(self, pr: GitHubPR) -> tuple[str, int, str]:
-        return (pr.repo.full_name, pr.number, pr.head_sha)
+    def _revision_key(self, pr: GitHubPR) -> tuple[str, int]:
+        """Key by (repo, pr_number) — not sha — to prevent re-processing loops."""
+        return (pr.repo.full_name, pr.number)
 
-    def mark_seen(self, pr: GitHubPR) -> None:
+    async def mark_seen(self, pr: GitHubPR) -> None:
         """Mark a PR as already seen (used for warm-up)."""
-        self._revised.add(self._revision_key(pr))
+        reviews = await self.github.get_pr_reviews(pr.repo, pr.number)
+        count = sum(1 for r in reviews if r.state == "CHANGES_REQUESTED")
+        self._revised[self._revision_key(pr)] = count
 
     async def needs_revision(self, pr: GitHubPR) -> bool:
         """Check if a PR is ours and has unaddressed REQUEST_CHANGES reviews."""
@@ -50,29 +53,19 @@ class RevisionWorker:
         if labels.trigger not in pr.labels:
             return False
 
-        # Skip if we already revised this exact version
-        key = self._revision_key(pr)
-        if key in self._revised:
-            return False
-
         # Check for REQUEST_CHANGES reviews
         reviews = await self.github.get_pr_reviews(pr.repo, pr.number)
-        has_changes_requested = any(
-            r.state == "CHANGES_REQUESTED" for r in reviews
+        changes_requested_count = sum(
+            1 for r in reviews if r.state == "CHANGES_REQUESTED"
         )
-        if not has_changes_requested:
+        if changes_requested_count == 0:
             return False
 
-        # Check if any REQUEST_CHANGES review is on the current head
-        # (meaning it hasn't been addressed by a new push yet)
-        current_reviews = [
-            r for r in reviews
-            if r.state == "CHANGES_REQUESTED" and r.commit_sha == pr.head_sha
-        ]
-        # Also check for CI failures on current head
-        check_failures = await self.github.get_pr_check_failures(pr.repo, pr.number)
-
-        return bool(current_reviews or check_failures)
+        # Only re-trigger if the number of REQUEST_CHANGES reviews has
+        # increased since our last revision (meaning a human posted a new one).
+        key = self._revision_key(pr)
+        prev_count = self._revised.get(key, 0)
+        return changes_requested_count > prev_count
 
     async def revise_pr(self, pr: GitHubPR) -> TaskResult:
         logger.info("Revising PR %s#%d: %s", pr.repo, pr.number, pr.title)
@@ -122,11 +115,15 @@ class RevisionWorker:
             # 6. Push to the same branch (try direct, fall back to fork remote)
             await self._push_revision(workspace.primary_repo_dir, pr)
 
-            # 7. Track as revised
+            # 7. Track as revised — store current count of CHANGES_REQUESTED
             if len(self._revised) >= self._MAX_REVISED_SIZE:
-                to_keep = list(self._revised)[self._MAX_REVISED_SIZE // 2 :]
-                self._revised = set(to_keep)
-            self._revised.add(self._revision_key(pr))
+                keys = list(self._revised.keys())
+                for k in keys[: self._MAX_REVISED_SIZE // 2]:
+                    del self._revised[k]
+            changes_requested_count = sum(
+                1 for r in reviews if r.state == "CHANGES_REQUESTED"
+            )
+            self._revised[self._revision_key(pr)] = changes_requested_count
 
             await self.github.post_comment(
                 pr.repo, pr.number,
@@ -148,8 +145,9 @@ class RevisionWorker:
                     f"❌ **autodev** failed to address review feedback.\n\n"
                     f"**Error type:** `{error_type}`",
                 )
-                # Mark as revised so we don't retry endlessly
-                self._revised.add(self._revision_key(pr))
+                # Mark as revised so we don't retry endlessly — use a high
+                # count so only genuinely new reviews re-trigger
+                self._revised[self._revision_key(pr)] = 999
             except Exception as post_err:
                 logger.error("Failed to post failure comment: %s", post_err)
             return TaskResult(success=False, error_message=str(e))
