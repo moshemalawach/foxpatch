@@ -10,7 +10,7 @@ from .claude_runner import ClaudeRunner
 from .config import AppConfig
 from .exceptions import AutoDevError
 from .github_client import GitHubClient
-from .models import GitHubIssue, TaskResult
+from .models import GitHubIssue, RepoRef, TaskResult
 from .prompts import build_issue_resolution_prompt
 from .state import StateManager
 from .workspace import WorkspaceManager
@@ -41,7 +41,9 @@ class IssueWorker:
             # 1. Claim
             claimed = await self.state.transition_to_in_progress(issue.repo, issue.number)
             if not claimed:
-                return TaskResult(success=False, error_message="Could not claim issue (race condition)")
+                return TaskResult(
+                    success=False, error_message="Could not claim issue (race condition)",
+                )
 
             # 2. Comment
             await self.github.post_comment(
@@ -139,7 +141,7 @@ class IssueWorker:
         return bool(stdout.decode().strip())
 
     async def _push_branch_or_fork(
-        self, repo_dir: Path, branch: str, repo: "RepoRef",
+        self, repo_dir: Path, branch: str, repo: RepoRef,
     ) -> str:
         """Push branch, forking if direct push fails.
 

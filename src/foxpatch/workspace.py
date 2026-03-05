@@ -91,6 +91,39 @@ class WorkspaceManager:
             primary_repo_dir=repo_dir,
         )
 
+    async def create_revision_workspace(
+        self,
+        pr: GitHubPR,
+        repo_group: RepoGroupConfig | None = None,
+    ) -> Workspace:
+        """Clone a PR branch for revision (full clone, not shallow)."""
+        task_dir = Path(tempfile.mkdtemp(
+            prefix=f"revision-{pr.number}-",
+            dir=self._ensure_base_dir(),
+        ))
+
+        logger.info("Creating revision workspace at %s", task_dir)
+
+        primary_dir = task_dir / pr.repo.name
+        await self._clone_repo(pr.repo, primary_dir, branch=pr.head_ref)
+
+        additional_dirs: list[Path] = []
+        if repo_group:
+            for repo_str in repo_group.repos:
+                repo = RepoRef.from_string(repo_str)
+                if repo.full_name == pr.repo.full_name:
+                    continue
+                sibling_dir = task_dir / repo.name
+                await self._clone_repo(repo, sibling_dir)
+                additional_dirs.append(sibling_dir)
+
+        return Workspace(
+            base_dir=task_dir,
+            primary_repo_dir=primary_dir,
+            additional_dirs=additional_dirs,
+            branch_name=pr.head_ref,
+        )
+
     async def _clone_repo(
         self, repo: RepoRef, dest: Path, shallow: bool = False, branch: str | None = None,
     ) -> None:

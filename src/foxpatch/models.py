@@ -66,6 +66,14 @@ class GitHubPR:
 
 
 @dataclass
+class PRReview:
+    author: str
+    state: str  # CHANGES_REQUESTED, APPROVED, COMMENTED, DISMISSED
+    body: str
+    commit_sha: str = ""
+
+
+@dataclass
 class ClaudeResult:
     success: bool
     output: str

@@ -8,7 +8,7 @@ import logging
 from typing import Any
 
 from .exceptions import GitHubCLIError
-from .models import GitHubIssue, GitHubPR, RepoRef
+from .models import GitHubIssue, GitHubPR, PRReview, RepoRef
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +215,53 @@ class GitHubClient:
             "--json", "defaultBranchRef",
         ])
         return data.get("defaultBranchRef", {}).get("name", "main")
+
+    async def get_pr_reviews(self, repo: RepoRef, number: int) -> list[PRReview]:
+        """Fetch reviews on a PR."""
+        data = await self._run_gh_json([
+            "pr", "view", str(number),
+            "--repo", repo.full_name,
+            "--json", "reviews",
+        ])
+        reviews = []
+        for r in data.get("reviews", []):
+            reviews.append(PRReview(
+                author=r.get("author", {}).get("login", ""),
+                state=r.get("state", ""),
+                body=r.get("body", ""),
+                commit_sha=r.get("commit", {}).get("oid", ""),
+            ))
+        return reviews
+
+    async def get_pr_check_failures(self, repo: RepoRef, number: int) -> list[dict[str, str]]:
+        """Fetch failed CI checks for a PR. Returns list of {name, state}."""
+        data = await self._run_gh_json([
+            "pr", "view", str(number),
+            "--repo", repo.full_name,
+            "--json", "statusCheckRollup",
+        ])
+        failures = []
+        for check in data.get("statusCheckRollup", []):
+            conclusion = check.get("conclusion", "")
+            status = check.get("status", "")
+            if conclusion == "FAILURE" or (status == "COMPLETED" and conclusion == "FAILURE"):
+                failures.append({
+                    "name": check.get("name", check.get("context", "unknown")),
+                    "conclusion": conclusion,
+                })
+        return failures
+
+    async def get_pr_comments(self, repo: RepoRef, number: int) -> list[dict[str, str]]:
+        """Fetch comments on a PR (not review comments, just regular comments)."""
+        data = await self._run_gh_json([
+            "pr", "view", str(number),
+            "--repo", repo.full_name,
+            "--json", "comments",
+        ])
+        return [
+            {"author": c.get("author", {}).get("login", ""), "body": c.get("body", "")}
+            for c in data.get("comments", [])
+        ]
 
     async def get_authenticated_user(self) -> str:
         # --jq returns a bare string, not JSON, so use _run_gh not _run_gh_json

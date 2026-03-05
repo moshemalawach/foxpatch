@@ -12,6 +12,7 @@ from .github_client import GitHubClient
 from .issue_worker import IssueWorker
 from .models import GitHubIssue, GitHubPR, RepoRef
 from .review_worker import ReviewWorker
+from .revision_worker import RevisionWorker
 from .state import StateManager
 from .workspace import WorkspaceManager
 
@@ -32,8 +33,11 @@ class Orchestrator:
             dry_run=dry_run,
         )
 
-        self.issue_worker = IssueWorker(config, self.github, self.state, self.claude, self.workspaces)
+        self.issue_worker = IssueWorker(
+            config, self.github, self.state, self.claude, self.workspaces,
+        )
         self.review_worker = ReviewWorker(config, self.github, self.claude, self.workspaces)
+        self.revision_worker = RevisionWorker(config, self.github, self.claude, self.workspaces)
 
         self._task_semaphore = asyncio.Semaphore(config.concurrency.max_parallel_tasks)
         self._review_semaphore = asyncio.Semaphore(config.concurrency.max_parallel_reviews)
@@ -56,9 +60,9 @@ class Orchestrator:
         await self._recover_stale_issues(repos)
 
         # Warm-up: mark all existing open PRs as already seen so we don't
-        # review the entire backlog on startup.
-        if self.config.github.review.enabled and not self.review_worker._warmed_up:
-            await self._warmup_reviews(repos)
+        # review the entire backlog or revise all existing PRs on startup.
+        if not self.review_worker._warmed_up:
+            await self._warmup_prs(repos)
             self.review_worker._warmed_up = True
 
         if once:
@@ -95,17 +99,21 @@ class Orchestrator:
             except Exception as e:
                 logger.error("Error polling issues for %s: %s", repo, e)
 
-        # Poll PRs
-        if self.config.github.review.enabled:
-            for repo in repos:
-                try:
-                    prs = await self.github.list_prs(repo)
-                    for pr in prs:
+        # Poll PRs (reviews + revisions)
+        for repo in repos:
+            try:
+                prs = await self.github.list_prs(repo)
+                for pr in prs:
+                    if self.config.github.review.enabled:
                         if self.review_worker.should_review(pr):
                             task = asyncio.create_task(self._dispatch_review(pr))
                             tasks.append(task)
-                except Exception as e:
-                    logger.error("Error polling PRs for %s: %s", repo, e)
+                    # Check if our own PRs need revision
+                    if await self.revision_worker.needs_revision(pr):
+                        task = asyncio.create_task(self._dispatch_revision(pr))
+                        tasks.append(task)
+            except Exception as e:
+                logger.error("Error polling PRs for %s: %s", repo, e)
 
         if tasks:
             logger.info("Dispatched %d tasks this cycle", len(tasks))
@@ -120,6 +128,10 @@ class Orchestrator:
     async def _dispatch_review(self, pr: GitHubPR) -> None:
         async with self._review_semaphore:
             await self.review_worker.review_pr(pr)
+
+    async def _dispatch_revision(self, pr: GitHubPR) -> None:
+        async with self._task_semaphore:
+            await self.revision_worker.revise_pr(pr)
 
     async def _resolve_repos(self) -> list[RepoRef]:
         repos: list[RepoRef] = []
@@ -166,22 +178,23 @@ class Orchestrator:
         if count:
             logger.info("Recovered %d stale in-progress issues", count)
 
-    async def _warmup_reviews(self, repos: list[RepoRef]) -> None:
-        """Mark all existing open PRs as seen so we only review new activity."""
+    async def _warmup_prs(self, repos: list[RepoRef]) -> None:
+        """Mark all existing open PRs as seen so we only review/revise new activity."""
 
         async def check_repo(repo: RepoRef) -> int:
             try:
                 prs = await self.github.list_prs(repo)
                 for pr in prs:
                     self.review_worker.mark_seen(pr)
+                    self.revision_worker.mark_seen(pr)
                 return len(prs)
             except Exception as e:
-                logger.error("Error during review warm-up for %s: %s", repo, e)
+                logger.error("Error during PR warm-up for %s: %s", repo, e)
                 return 0
 
         results = await asyncio.gather(*[check_repo(r) for r in repos])
         count = sum(results)
-        logger.info("Review warm-up complete: marked %d existing PRs as seen", count)
+        logger.info("PR warm-up complete: marked %d existing PRs as seen", count)
 
     def _handle_signal(self) -> None:
         logger.info("Received shutdown signal")

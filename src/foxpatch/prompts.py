@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .models import GitHubIssue, GitHubPR
+from .models import GitHubIssue, GitHubPR, PRReview
 
 
 def build_issue_resolution_prompt(issue: GitHubIssue) -> str:
@@ -100,5 +100,80 @@ def build_pr_review_prompt(pr: GitHubPR) -> str:
         "Use COMMENT for suggestions and style nits.",
         "Use APPROVE if the code is correct and well-written, even with minor nits.",
     ]
+
+    return "\n".join(parts)
+
+
+def build_pr_revision_prompt(
+    pr: GitHubPR,
+    reviews: list[PRReview],
+    check_failures: list[dict[str, str]],
+    pr_comments: list[dict[str, str]],
+) -> str:
+    parts = [
+        f"# PR Revision: #{pr.number} — {pr.title}",
+        "",
+        f"**Repository:** {pr.repo.full_name}",
+        f"**Branch:** {pr.head_ref}",
+        "",
+        "## Context",
+        "",
+        "This is a PR you previously created. It has received review feedback that"
+        " needs to be addressed. Your job is to fix the issues and commit.",
+        "",
+    ]
+
+    # Add review feedback
+    change_requests = [r for r in reviews if r.state == "CHANGES_REQUESTED"]
+    if change_requests:
+        parts.extend(["## Review Feedback (REQUEST_CHANGES)", ""])
+        for i, review in enumerate(change_requests, 1):
+            parts.extend([
+                f"### Review {i} by @{review.author}",
+                "",
+                review.body or "(no body)",
+                "",
+            ])
+
+    # Add regular comments (may contain additional feedback)
+    if pr_comments:
+        parts.extend(["## PR Comments", ""])
+        for comment in pr_comments:
+            parts.extend([
+                f"**@{comment['author']}:**",
+                "",
+                comment["body"],
+                "",
+            ])
+
+    # Add CI failures
+    if check_failures:
+        parts.extend(["## CI Failures", ""])
+        for check in check_failures:
+            parts.append(f"- **{check['name']}**: {check['conclusion']}")
+        parts.extend([
+            "",
+            "Run the test suite and linter locally to reproduce and fix these failures.",
+            "",
+        ])
+
+    parts.extend([
+        "## Instructions",
+        "",
+        "You are on the PR branch already. Fix the issues raised in the review"
+        " feedback and CI failures above.",
+        "",
+        "1. **Read the feedback** — Understand what the reviewers want changed.",
+        "2. **Fix** — Make the necessary changes. Run tests and linters.",
+        "3. **Commit** — Commit with a clear message. You MUST create at least one"
+        "   git commit or your fixes will be lost.",
+        "",
+        "## Rules",
+        "",
+        "- Do NOT push or create a new PR — that will be handled externally.",
+        "- Do NOT rewrite the entire PR. Only address the specific feedback.",
+        "- If CI is failing, reproduce locally and fix.",
+        "- Use conventional commit style: `fix:`, `refactor:`, etc.",
+    ])
 
     return "\n".join(parts)
