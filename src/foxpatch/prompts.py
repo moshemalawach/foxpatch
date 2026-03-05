@@ -25,15 +25,28 @@ def build_issue_resolution_prompt(issue: GitHubIssue) -> str:
         "",
         "## Instructions",
         "",
-        "1. Analyze the issue and understand what needs to be fixed or implemented.",
-        "2. Explore the codebase to understand the relevant code and architecture.",
-        "3. Implement the fix or feature as described in the issue.",
-        "4. Write or update tests to cover your changes.",
-        "5. Make sure existing tests still pass.",
-        "6. Commit your changes with a clear commit message referencing the issue number.",
+        "You are an autonomous coding agent. Your job is to resolve this issue by"
+        " making commits to the current branch. Nobody will review your work before"
+        " it becomes a PR, so be thorough but efficient.",
         "",
-        f"Reference this issue as #{issue.number} in your commit message.",
-        "Do NOT push or create a PR — that will be handled externally.",
+        "1. **Understand** — Read the relevant source files and tests. Find similar"
+        " patterns in the codebase. Be targeted: don't read everything, just what's"
+        " needed for this issue.",
+        "2. **Implement** — Make the changes. Follow existing code style and conventions."
+        " Write tests if the project has a test suite. Keep changes minimal and focused"
+        " on what the issue asks for (YAGNI).",
+        "3. **Verify** — Run tests if they exist. Run the linter if configured. Fix"
+        " any issues you find.",
+        "4. **Commit** — Commit your changes with a clear message. You MUST create at"
+        " least one git commit or your work will be lost.",
+        "",
+        "## Rules",
+        "",
+        f"- Reference this issue as #{issue.number} in your commit messages.",
+        "- Use conventional commit style: `feat:`, `fix:`, `refactor:`, etc.",
+        "- Do NOT push or create a PR — that will be handled externally.",
+        "- Do NOT spend excessive time exploring. Get to implementation quickly.",
+        "- If you're unsure about something, make a reasonable choice and move on.",
     ])
 
     return "\n".join(parts)

@@ -52,6 +52,15 @@ class Orchestrator:
         repos = await self._resolve_repos()
         logger.info("Monitoring %d repositories", len(repos))
 
+        # Startup: recover stale in-progress issues (e.g. from a crash/restart)
+        await self._recover_stale_issues(repos)
+
+        # Warm-up: mark all existing open PRs as already seen so we don't
+        # review the entire backlog on startup.
+        if self.config.github.review.enabled and not self.review_worker._warmed_up:
+            await self._warmup_reviews(repos)
+            self.review_worker._warmed_up = True
+
         if once:
             await self._run_cycle(repos)
             return
@@ -129,6 +138,50 @@ class Orchestrator:
                 except Exception as e:
                     logger.error("Error listing repos for org %s: %s", org_cfg.name, e)
         return repos
+
+    async def _recover_stale_issues(self, repos: list[RepoRef]) -> None:
+        """Reset in-progress issues back to actionable state on startup."""
+        labels = self.config.github.labels
+
+        async def check_repo(repo: RepoRef) -> int:
+            try:
+                issues = await self.github.list_issues(repo, labels.in_progress)
+                for issue in issues:
+                    logger.warning(
+                        "Recovering stale in-progress issue %s#%d", repo, issue.number,
+                    )
+                    await self.state.transition_to_failed(repo, issue.number)
+                    await self.github.post_comment(
+                        repo, issue.number,
+                        f"⚠️ **autodev** was restarted while working on this issue.\n\n"
+                        f"Remove the `{labels.failed}` label to retry.",
+                    )
+                return len(issues)
+            except Exception as e:
+                logger.error("Error recovering stale issues for %s: %s", repo, e)
+                return 0
+
+        results = await asyncio.gather(*[check_repo(r) for r in repos])
+        count = sum(results)
+        if count:
+            logger.info("Recovered %d stale in-progress issues", count)
+
+    async def _warmup_reviews(self, repos: list[RepoRef]) -> None:
+        """Mark all existing open PRs as seen so we only review new activity."""
+
+        async def check_repo(repo: RepoRef) -> int:
+            try:
+                prs = await self.github.list_prs(repo)
+                for pr in prs:
+                    self.review_worker.mark_seen(pr)
+                return len(prs)
+            except Exception as e:
+                logger.error("Error during review warm-up for %s: %s", repo, e)
+                return 0
+
+        results = await asyncio.gather(*[check_repo(r) for r in repos])
+        count = sum(results)
+        logger.info("Review warm-up complete: marked %d existing PRs as seen", count)
 
     def _handle_signal(self) -> None:
         logger.info("Received shutdown signal")

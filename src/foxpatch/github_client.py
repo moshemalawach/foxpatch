@@ -116,10 +116,23 @@ class GitHubClient:
         ])
         return [lbl["name"] for lbl in data.get("labels", [])]
 
+    async def ensure_label_exists(self, repo: RepoRef, label: str) -> None:
+        """Create a label on the repo if it doesn't already exist."""
+        if self.dry_run:
+            return
+        # gh label create is idempotent — exits 0 if it already exists
+        await self._run_gh([
+            "label", "create", label,
+            "--repo", repo.full_name,
+            "--color", "5319E7",
+            "--force",
+        ])
+
     async def add_label(self, repo: RepoRef, number: int, label: str) -> None:
         if self.dry_run:
             logger.info("[DRY RUN] Would add label '%s' to %s#%d", label, repo, number)
             return
+        await self.ensure_label_exists(repo, label)
         await self._run_gh([
             "issue", "edit", str(number),
             "--repo", repo.full_name,
@@ -202,3 +215,21 @@ class GitHubClient:
             "--json", "defaultBranchRef",
         ])
         return data.get("defaultBranchRef", {}).get("name", "main")
+
+    async def get_authenticated_user(self) -> str:
+        # --jq returns a bare string, not JSON, so use _run_gh not _run_gh_json
+        return await self._run_gh(["api", "user", "--jq", ".login"])
+
+    async def fork_repo(self, repo: RepoRef) -> str:
+        """Fork a repo. Returns the fork's full_name (e.g. 'botuser/repo')."""
+        if self.dry_run:
+            logger.info("[DRY RUN] Would fork %s", repo)
+            return f"dry-run-fork/{repo.name}"
+        output = await self._run_gh([
+            "repo", "fork", repo.full_name,
+            "--clone=false",
+        ])
+        logger.info("Forked %s: %s", repo, output)
+        # Determine fork name from authenticated user
+        user = await self.get_authenticated_user()
+        return f"{user}/{repo.name}"

@@ -31,9 +31,14 @@ class ReviewWorker:
         # Bounded: entries are pruned when exceeding _MAX_REVIEWED_SIZE.
         self._reviewed: set[tuple[str, int, str]] = set()
         self._MAX_REVIEWED_SIZE = 10_000
+        self._warmed_up = False
 
     def _review_key(self, pr: GitHubPR) -> tuple[str, int, str]:
         return (pr.repo.full_name, pr.number, pr.head_sha)
+
+    def mark_seen(self, pr: GitHubPR) -> None:
+        """Mark a PR as already seen without reviewing it (used for warm-up)."""
+        self._reviewed.add(self._review_key(pr))
 
     def should_review(self, pr: GitHubPR) -> bool:
         review_cfg = self.config.github.review

@@ -57,7 +57,7 @@ async def test_process_issue_success(
         success=True, output="Fixed", cost_usd=0.5, num_turns=3, duration_seconds=30,
     ))
     worker._has_new_commits = AsyncMock(return_value=True)
-    worker._push_branch = AsyncMock()
+    worker._push_branch_or_fork = AsyncMock(return_value="")
 
     result = await worker.process_issue(sample_issue)
     assert result.success is True

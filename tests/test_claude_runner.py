@@ -13,7 +13,6 @@ from foxpatch.claude_runner import ClaudeRunner
 def test_build_command_basic() -> None:
     runner = ClaudeRunner()
     cmd = runner._build_command(
-        "Fix the bug",
         model="opus",
         max_turns=10,
         max_budget_usd=2.0,
@@ -21,7 +20,7 @@ def test_build_command_basic() -> None:
     )
     assert cmd[0] == "claude"
     assert "-p" in cmd
-    assert "Fix the bug" in cmd
+    assert "-" in cmd  # prompt via stdin
     assert "--model" in cmd
     assert "opus" in cmd
     assert "--max-turns" in cmd
@@ -31,7 +30,6 @@ def test_build_command_basic() -> None:
 def test_build_command_with_tools() -> None:
     runner = ClaudeRunner()
     cmd = runner._build_command(
-        "prompt",
         allowed_tools=["Read", "Edit", "Grep"],
     )
     assert "--allowedTools" in cmd
@@ -42,7 +40,6 @@ def test_build_command_with_tools() -> None:
 def test_build_command_with_add_dirs() -> None:
     runner = ClaudeRunner()
     cmd = runner._build_command(
-        "prompt",
         add_dirs=[Path("/tmp/repo1"), Path("/tmp/repo2")],
     )
     assert "--add-dir" in cmd
@@ -53,7 +50,6 @@ def test_build_command_with_add_dirs() -> None:
 def test_build_command_with_system_prompt() -> None:
     runner = ClaudeRunner()
     cmd = runner._build_command(
-        "prompt",
         system_prompt="You are a helpful assistant",
     )
     assert "--append-system-prompt" in cmd

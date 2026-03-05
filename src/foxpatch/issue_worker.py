@@ -81,18 +81,19 @@ class IssueWorker:
             if not has_commits:
                 raise AutoDevError("Claude produced no commits")
 
-            # 7. Push and create PR
-            await self._push_branch(workspace.primary_repo_dir, workspace.branch_name)
+            # 7. Push and create PR (try direct push, fall back to fork)
+            fork_user = await self._push_branch_or_fork(
+                workspace.primary_repo_dir, workspace.branch_name, issue.repo,
+            )
+            head = (
+                f"{fork_user}:{workspace.branch_name}" if fork_user
+                else workspace.branch_name
+            )
             pr_url = await self.github.create_pr(
                 issue.repo,
                 title=f"Fix #{issue.number}: {issue.title}",
-                body=(
-                    f"Automated fix for #{issue.number}.\n\n"
-                    f"**Cost:** ${claude_result.cost_usd:.2f} | "
-                    f"**Turns:** {claude_result.num_turns} | "
-                    f"**Duration:** {claude_result.duration_seconds:.0f}s"
-                ),
-                head=workspace.branch_name,
+                body=f"Automated fix for #{issue.number}.",
+                head=head,
                 base=default_branch,
             )
 
@@ -100,10 +101,7 @@ class IssueWorker:
             await self.state.transition_to_done(issue.repo, issue.number)
             await self.github.post_comment(
                 issue.repo, issue.number,
-                f"✅ PR created: {pr_url}\n\n"
-                f"**Cost:** ${claude_result.cost_usd:.2f} | "
-                f"**Turns:** {claude_result.num_turns} | "
-                f"**Duration:** {claude_result.duration_seconds:.0f}s",
+                f"✅ PR created: {pr_url}",
             )
 
             logger.info("Successfully processed issue %s#%d → %s", issue.repo, issue.number, pr_url)
@@ -140,7 +138,15 @@ class IssueWorker:
         stdout, _ = await proc.communicate()
         return bool(stdout.decode().strip())
 
-    async def _push_branch(self, repo_dir: Path, branch: str) -> None:
+    async def _push_branch_or_fork(
+        self, repo_dir: Path, branch: str, repo: "RepoRef",
+    ) -> str:
+        """Push branch, forking if direct push fails.
+
+        Returns the fork owner username if a fork was used, or empty string
+        if pushed directly.
+        """
+        # Try direct push first
         proc = await asyncio.create_subprocess_exec(
             "git", "push", "-u", "origin", branch,
             cwd=repo_dir,
@@ -148,5 +154,39 @@ class IssueWorker:
             stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            return ""
+
+        logger.info(
+            "Direct push to %s failed, forking: %s", repo, stderr.decode().strip()
+        )
+
+        # Fork and push there instead
+        fork_full = await self.github.fork_repo(repo)
+        fork_url = f"https://github.com/{fork_full}.git"
+
+        # Add fork as remote and push
+        await self._run_git(["remote", "add", "fork", fork_url], cwd=repo_dir)
+        push_proc = await asyncio.create_subprocess_exec(
+            "git", "push", "-u", "fork", branch,
+            cwd=repo_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, push_stderr = await push_proc.communicate()
+        if push_proc.returncode != 0:
+            raise AutoDevError(f"git push to fork failed: {push_stderr.decode().strip()}")
+
+        return fork_full.split("/")[0]
+
+    async def _run_git(self, args: list[str], cwd: Path) -> str:
+        proc = await asyncio.create_subprocess_exec(
+            "git", *args,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise AutoDevError(f"git push failed: {stderr.decode().strip()}")
+            raise AutoDevError(f"git {' '.join(args)} failed: {stderr.decode().strip()}")
+        return stdout.decode().strip()

@@ -20,7 +20,6 @@ class ClaudeRunner:
 
     def _build_command(
         self,
-        prompt: str,
         *,
         model: str = "sonnet",
         max_turns: int = 50,
@@ -30,9 +29,10 @@ class ClaudeRunner:
         system_prompt: str = "",
         add_dirs: list[Path] | None = None,
     ) -> list[str]:
+        # Prompt is passed via stdin (using -p -) to avoid arg length limits
         cmd = [
             "claude",
-            "-p", prompt,
+            "-p", "-",
             "--dangerously-skip-permissions",
             "--output-format", "json",
             "--model", model,
@@ -72,7 +72,6 @@ class ClaudeRunner:
             return ClaudeResult(success=True, output="[dry run]")
 
         cmd = self._build_command(
-            prompt,
             model=model,
             max_turns=max_turns,
             max_budget_usd=max_budget_usd,
@@ -89,11 +88,12 @@ class ClaudeRunner:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=cwd,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(),
+                proc.communicate(input=prompt.encode()),
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
@@ -136,9 +136,15 @@ class ClaudeRunner:
             )
 
         result_text = data.get("result", "")
-        cost_usd = data.get("cost_usd", 0.0)
+        cost_usd = data.get("total_cost_usd", data.get("cost_usd", 0.0))
         num_turns = data.get("num_turns", 0)
         is_error = data.get("is_error", False)
+        stop_reason = data.get("stop_reason", "unknown")
+
+        logger.info(
+            "Claude finished: turns=%d, cost=$%.2f, duration=%.0fs, stop=%s, error=%s, output=%s",
+            num_turns, cost_usd, duration, stop_reason, is_error, result_text[:500],
+        )
 
         return ClaudeResult(
             success=not is_error,
