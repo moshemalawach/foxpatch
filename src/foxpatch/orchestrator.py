@@ -186,6 +186,7 @@ class Orchestrator:
                 prs = await self.github.list_prs(repo)
                 for pr in prs:
                     self.review_worker.mark_seen(pr)
+                    await self.revision_worker.mark_seen(pr)
                 return len(prs)
             except Exception as e:
                 logger.error("Error during PR warm-up for %s: %s", repo, e)
