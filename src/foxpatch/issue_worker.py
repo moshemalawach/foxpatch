@@ -97,6 +97,7 @@ class IssueWorker:
                 body=f"Automated fix for #{issue.number}.",
                 head=head,
                 base=default_branch,
+                labels=[self.config.github.labels.trigger],
             )
 
             # 8. Done

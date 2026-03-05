@@ -166,18 +166,22 @@ class GitHubClient:
         body: str,
         head: str,
         base: str = "main",
+        labels: list[str] | None = None,
     ) -> str:
         if self.dry_run:
             logger.info("[DRY RUN] Would create PR '%s' on %s (%s -> %s)", title, repo, head, base)
             return "https://github.com/dry-run/pr"
-        output = await self._run_gh([
+        args = [
             "pr", "create",
             "--repo", repo.full_name,
             "--title", title,
             "--body", body,
             "--head", head,
             "--base", base,
-        ])
+        ]
+        for label in labels or []:
+            args.extend(["--label", label])
+        output = await self._run_gh(args)
         return output.strip()
 
     async def get_pr_diff(self, repo: RepoRef, number: int) -> str:
