@@ -27,7 +27,7 @@ class Orchestrator:
 
         self.github = GitHubClient(dry_run=dry_run)
         self.state = StateManager(self.github, config.github.labels)
-        self.claude = ClaudeRunner(dry_run=dry_run)
+        self.claude = ClaudeRunner(dry_run=dry_run, env_vars=config.claude.env_vars)
         self.workspaces = WorkspaceManager(
             base_dir=config.concurrency.workspace_base_dir,
             dry_run=dry_run,

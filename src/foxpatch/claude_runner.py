@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -15,8 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 class ClaudeRunner:
-    def __init__(self, dry_run: bool = False):
+    def __init__(self, dry_run: bool = False, env_vars: dict[str, str] | None = None):
         self.dry_run = dry_run
+        self.env_vars = env_vars or {}
 
     def _build_command(
         self,
@@ -85,12 +87,17 @@ class ClaudeRunner:
         start = time.monotonic()
 
         try:
+            # Merge env_vars with current environment
+            env = os.environ.copy()
+            env.update(self.env_vars)
+
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=cwd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(input=prompt.encode()),

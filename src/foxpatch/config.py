@@ -63,6 +63,7 @@ class ClaudeConfig:
         "Bash(git *)", "Bash(python *)", "Bash(npm *)", "Bash(cargo *)",
     ])
     append_system_prompt: str = ""
+    env_vars: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

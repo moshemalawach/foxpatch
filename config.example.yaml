@@ -56,6 +56,11 @@ claude:
   append_system_prompt: |
     You are working on the aleph.im / Libertai ecosystem.
     Follow existing code style. Write tests for new functionality.
+  env_vars:
+    ANTHROPIC_BASE_URL: "https://api.libertai.io"
+    ANTHROPIC_AUTH_TOKEN: "your-token-here"
+    CLAUDE_CODE_ATTRIBUTION_HEADER: "0"
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
 
 concurrency:
   max_parallel_tasks: 3
