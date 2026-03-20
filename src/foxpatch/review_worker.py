@@ -81,12 +81,23 @@ class ReviewWorker:
             pr.diff = await self.github.get_pr_diff(pr.repo, pr.number)
             if not pr.diff.strip():
                 logger.info("PR %s#%d has empty diff, skipping", pr.repo, pr.number)
+                self._mark_reviewed(pr)
                 return TaskResult(success=True)
 
-            # 2. Create review workspace
+            # 2. Check diff size
+            max_diff = self.config.github.review.max_diff_size
+            if len(pr.diff.encode()) > max_diff:
+                logger.warning(
+                    "PR %s#%d diff too large (%d bytes > %d), skipping review",
+                    pr.repo, pr.number, len(pr.diff.encode()), max_diff,
+                )
+                self._mark_reviewed(pr)
+                return TaskResult(success=True)
+
+            # 3. Create review workspace
             workspace = await self.workspaces.create_review_workspace(pr)
 
-            # 3. Run Claude review
+            # 4. Run Claude review
             prompt = build_pr_review_prompt(pr)
             review_tools = ["Read", "Glob", "Grep"]
             claude_result = await self.claude.run(
@@ -100,20 +111,21 @@ class ReviewWorker:
                 system_prompt=self.config.claude.append_system_prompt,
             )
 
-            # 4. Parse verdict and post review
+            # 5. Parse verdict and post review
             verdict, body = self._parse_review(claude_result.output)
-            await self.github.post_review(
-                pr.repo, pr.number,
-                body=body,
-                event=verdict.value,
-            )
+            if not body.strip():
+                logger.warning(
+                    "PR %s#%d: Claude returned empty review body, skipping post",
+                    pr.repo, pr.number,
+                )
+            else:
+                await self.github.post_review(
+                    pr.repo, pr.number,
+                    body=body,
+                    event=verdict.value,
+                )
 
-            # 5. Track as reviewed (with bounded size)
-            if len(self._reviewed) >= self._MAX_REVIEWED_SIZE:
-                # Evict ~half the entries to avoid unbounded growth
-                to_keep = list(self._reviewed)[self._MAX_REVIEWED_SIZE // 2 :]
-                self._reviewed = set(to_keep)
-            self._reviewed.add(self._review_key(pr))
+            self._mark_reviewed(pr)
 
             logger.info(
                 "Reviewed PR %s#%d: %s ($%.2f)",
@@ -123,11 +135,19 @@ class ReviewWorker:
 
         except Exception as e:
             logger.error("Failed to review PR %s#%d: %s", pr.repo, pr.number, e)
+            self._mark_reviewed(pr)
             return TaskResult(success=False, error_message=str(e))
 
         finally:
             if workspace:
                 self.workspaces.cleanup(workspace)
+
+    def _mark_reviewed(self, pr: GitHubPR) -> None:
+        """Track a PR as reviewed (with bounded size)."""
+        if len(self._reviewed) >= self._MAX_REVIEWED_SIZE:
+            to_keep = list(self._reviewed)[self._MAX_REVIEWED_SIZE // 2 :]
+            self._reviewed = set(to_keep)
+        self._reviewed.add(self._review_key(pr))
 
     def _parse_review(self, output: str) -> tuple[ReviewVerdict, str]:
         # Try to extract JSON from the output
