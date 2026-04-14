@@ -125,3 +125,71 @@ async def test_review_pr_empty_diff(
     worker.github.get_pr_diff = AsyncMock(return_value="")
     result = await worker.review_pr(sample_pr)
     assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_review_pr_large_diff_explore_mode(
+    worker: ReviewWorker, sample_pr: GitHubPR, tmp_path: Path
+) -> None:
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    workspace = Workspace(base_dir=tmp_path, primary_repo_dir=repo_dir)
+
+    large_diff = "diff --git a/big.py b/big.py\n" + ("+x\n" * 10_000)
+    worker.config.github.review.max_diff_size = 1_000  # force explore mode
+
+    worker.github.get_pr_diff = AsyncMock(return_value=large_diff)
+    worker.github.get_pr_files = AsyncMock(return_value=[
+        {"path": "big.py", "additions": 10000, "deletions": 0},
+    ])
+    worker.github.post_review = AsyncMock()
+    worker.workspaces.create_review_workspace = AsyncMock(return_value=workspace)
+    worker.workspaces.cleanup = MagicMock()
+    worker.claude.run = AsyncMock(return_value=ClaudeResult(
+        success=True,
+        output='{"verdict": "COMMENT", "summary": "Explored", "comments": []}',
+        cost_usd=0.2,
+    ))
+
+    result = await worker.review_pr(sample_pr)
+
+    assert result.success is True
+    # Diff file was written inside the repo dir so Claude can Read it
+    diff_file = repo_dir / ".foxpatch_pr.diff"
+    assert diff_file.exists()
+    assert diff_file.read_text() == large_diff
+    # File list was fetched
+    worker.github.get_pr_files.assert_called_once()
+    # Claude was invoked (not skipped) with explore prompt
+    worker.claude.run.assert_called_once()
+    prompt_arg = worker.claude.run.call_args.args[0]
+    assert "too large to embed" in prompt_arg
+    assert ".foxpatch_pr.diff" in prompt_arg
+    assert "big.py" in prompt_arg
+    worker.github.post_review.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_review_pr_large_diff_file_list_failure(
+    worker: ReviewWorker, sample_pr: GitHubPR, tmp_path: Path
+) -> None:
+    """If get_pr_files fails, explore mode still proceeds with an empty file list."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    workspace = Workspace(base_dir=tmp_path, primary_repo_dir=repo_dir)
+
+    worker.config.github.review.max_diff_size = 10
+    worker.github.get_pr_diff = AsyncMock(return_value="diff --git a/x b/x\n+big" * 100)
+    worker.github.get_pr_files = AsyncMock(side_effect=RuntimeError("gh failed"))
+    worker.github.post_review = AsyncMock()
+    worker.workspaces.create_review_workspace = AsyncMock(return_value=workspace)
+    worker.workspaces.cleanup = MagicMock()
+    worker.claude.run = AsyncMock(return_value=ClaudeResult(
+        success=True,
+        output='{"verdict": "APPROVE", "summary": "ok", "comments": []}',
+        cost_usd=0.1,
+    ))
+
+    result = await worker.review_pr(sample_pr)
+    assert result.success is True
+    worker.claude.run.assert_called_once()

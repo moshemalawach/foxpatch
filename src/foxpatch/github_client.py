@@ -190,6 +190,15 @@ class GitHubClient:
             "--repo", repo.full_name,
         ])
 
+    async def get_pr_files(self, repo: RepoRef, number: int) -> list[dict[str, Any]]:
+        """Return the list of files changed in a PR with additions/deletions counts."""
+        data = await self._run_gh_json([
+            "pr", "view", str(number),
+            "--repo", repo.full_name,
+            "--json", "files",
+        ])
+        return data.get("files", []) if isinstance(data, dict) else []
+
     async def post_review(
         self,
         repo: RepoRef,

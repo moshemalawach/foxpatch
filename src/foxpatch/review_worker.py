@@ -9,8 +9,10 @@ from .claude_runner import ClaudeRunner
 from .config import AppConfig
 from .github_client import GitHubClient
 from .models import GitHubPR, ReviewVerdict, TaskResult
-from .prompts import build_pr_review_prompt
+from .prompts import build_pr_review_prompt, build_pr_review_prompt_explore
 from .workspace import WorkspaceManager
+
+_EXPLORE_DIFF_FILENAME = ".foxpatch_pr.diff"
 
 logger = logging.getLogger(__name__)
 
@@ -84,27 +86,43 @@ class ReviewWorker:
                 self._mark_reviewed(pr)
                 return TaskResult(success=True)
 
-            # 2. Check diff size
-            max_diff = self.config.github.review.max_diff_size
-            if len(pr.diff.encode()) > max_diff:
-                logger.warning(
-                    "PR %s#%d diff too large (%d bytes > %d), skipping review",
-                    pr.repo, pr.number, len(pr.diff.encode()), max_diff,
-                )
-                self._mark_reviewed(pr)
-                return TaskResult(success=True)
-
-            # 3. Create review workspace
+            # 2. Create review workspace
             workspace = await self.workspaces.create_review_workspace(pr)
 
+            # 3. Build prompt — small diffs are embedded inline, large diffs are
+            # written to a file on disk and Claude navigates the workspace itself.
+            diff_bytes = len(pr.diff.encode())
+            max_inline = self.config.github.review.max_diff_size
+            explore_mode = diff_bytes > max_inline
+
+            if explore_mode:
+                logger.info(
+                    "PR %s#%d diff is large (%d bytes > %d), reviewing in explore mode",
+                    pr.repo, pr.number, diff_bytes, max_inline,
+                )
+                diff_path = workspace.primary_repo_dir / _EXPLORE_DIFF_FILENAME
+                diff_path.write_text(pr.diff)
+                try:
+                    files = await self.github.get_pr_files(pr.repo, pr.number)
+                except Exception as e:
+                    logger.warning(
+                        "PR %s#%d: failed to fetch file list (%s), continuing without it",
+                        pr.repo, pr.number, e,
+                    )
+                    files = []
+                prompt = build_pr_review_prompt_explore(pr, files, _EXPLORE_DIFF_FILENAME)
+                max_turns = 40
+            else:
+                prompt = build_pr_review_prompt(pr)
+                max_turns = 20
+
             # 4. Run Claude review
-            prompt = build_pr_review_prompt(pr)
             review_tools = ["Read", "Glob", "Grep"]
             claude_result = await self.claude.run(
                 prompt,
                 cwd=workspace.primary_repo_dir,
                 model=self.config.claude.model_for_reviews,
-                max_turns=20,
+                max_turns=max_turns,
                 max_budget_usd=self.config.claude.max_budget_usd_review,
                 timeout_seconds=self.config.claude.timeout_seconds,
                 allowed_tools=review_tools,

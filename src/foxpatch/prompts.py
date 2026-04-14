@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from .models import GitHubIssue, GitHubPR, PRReview
 
 
@@ -69,6 +71,90 @@ def build_pr_review_prompt(pr: GitHubPR) -> str:
         "```diff",
         pr.diff,
         "```",
+        "",
+        "## Review Instructions",
+        "",
+        "Review this pull request for:",
+        "- **Correctness:** Logic errors, off-by-one errors, race conditions",
+        "- **Security:** Injection vulnerabilities, credential exposure, unsafe operations",
+        "- **Code quality:** Readability, naming, unnecessary complexity",
+        "- **Testing:** Missing test coverage for new or changed behavior",
+        "- **Documentation:** Missing or outdated comments for non-obvious logic",
+        "",
+        "## Output Format",
+        "",
+        "Respond with a JSON object:",
+        "```json",
+        '{',
+        '  "verdict": "APPROVE" | "REQUEST_CHANGES" | "COMMENT",',
+        '  "summary": "One-paragraph overall assessment",',
+        '  "comments": [',
+        '    {',
+        '      "path": "file/path.py",',
+        '      "line": 42,',
+        '      "body": "Description of the issue or suggestion"',
+        '    }',
+        '  ]',
+        '}',
+        "```",
+        "",
+        "Only use REQUEST_CHANGES for genuine bugs or security issues.",
+        "Use COMMENT for suggestions and style nits.",
+        "Use APPROVE if the code is correct and well-written, even with minor nits.",
+    ]
+
+    return "\n".join(parts)
+
+
+def build_pr_review_prompt_explore(
+    pr: GitHubPR,
+    files: list[dict[str, Any]],
+    diff_path: str,
+) -> str:
+    """Review prompt for PRs whose diff is too large to embed.
+
+    Instructs Claude to navigate the workspace and page through a diff file
+    on disk instead of receiving the full diff inline.
+    """
+    file_lines: list[str] = []
+    for f in files:
+        path = f.get("path", "?")
+        additions = f.get("additions", 0)
+        deletions = f.get("deletions", 0)
+        file_lines.append(f"- `{path}` (+{additions}/-{deletions})")
+    if not file_lines:
+        file_lines = ["(file list unavailable)"]
+
+    parts = [
+        f"# PR Review: #{pr.number} — {pr.title}",
+        "",
+        f"**Repository:** {pr.repo.full_name}",
+        f"**Author:** {pr.author}",
+        f"**Base:** {pr.base_ref} ← **Head:** {pr.head_ref}",
+        "",
+        "## PR Description",
+        "",
+        pr.body or "(no description provided)",
+        "",
+        "## Changed Files",
+        "",
+        *file_lines,
+        "",
+        "## How to review",
+        "",
+        "This PR's diff is too large to embed in the prompt. Instead:",
+        "",
+        f"- The full unified diff has been written to `{diff_path}` in the current"
+        " directory. Use `Grep` to locate hunks for a specific file (search for"
+        f" `diff --git a/path/to/file` inside `{diff_path}`), and `Read` with"
+        " offset/limit to page through sections.",
+        "- The working tree is checked out at the PR head branch. Use `Read`, `Glob`,"
+        " and `Grep` to inspect the current state of changed files and surrounding"
+        " context directly.",
+        "- Prioritize files with the most changes and those touching sensitive areas"
+        " (auth, crypto, data handling, concurrency, input parsing).",
+        "- You do NOT need to review every line — focus on finding real bugs,"
+        " security issues, and design problems.",
         "",
         "## Review Instructions",
         "",

@@ -25,7 +25,7 @@ class ReviewConfig:
     skip_bot_prs: bool = False
     skip_authors: list[str] = field(default_factory=list)
     re_review_on_push: bool = True
-    max_diff_size: int = 512_000  # Skip diffs larger than this (bytes)
+    max_diff_size: int = 512_000  # Above this, review in explore mode instead of inlining the diff
 
 
 @dataclass
