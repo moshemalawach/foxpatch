@@ -92,6 +92,76 @@ def test_parse_review_invalid_json(worker: ReviewWorker) -> None:
     assert body == output
 
 
+def test_parse_review_fenced_json_with_scratchpad(worker: ReviewWorker) -> None:
+    # Reproduces aleph-rs#191: model emits chain-of-thought (with stray `{:>15}`)
+    # before the final structured JSON in a ```json fence.
+    output = (
+        "Now let me check the `Amount` column - printed with `{:>15}` which is "
+        "right-aligned, so the bracket might confuse a naive parser.\n\n"
+        "Let me compile the review.\n\n"
+        "```json\n"
+        '{"verdict": "COMMENT", "summary": "Clean PR with one concern.",\n'
+        ' "comments": [{"path": "src/lib.rs", "line": 42, "body": "consider X"}]}\n'
+        "```\n\n"
+        "**Additional context:** trailing prose."
+    )
+    verdict, body = worker._parse_review(output)
+    assert verdict == ReviewVerdict.COMMENT
+    assert "Clean PR with one concern." in body
+    assert "src/lib.rs" in body and "consider X" in body
+    assert "Now let me check" not in body  # scratchpad must not leak
+    assert "{:>15}" not in body
+
+
+def test_parse_review_array_only_with_prose_verdict(worker: ReviewWorker) -> None:
+    # Reproduces aleph-rs#190: prose declares verdict, JSON block is a bare array.
+    output = (
+        "**Verdict:** `REQUEST_CHANGES`\n\n"
+        "**Summary:** This PR has a real bug in the forget envelope.\n\n"
+        "**Comments:**\n\n"
+        "```json\n"
+        '[{"path": "src/forget.rs", "line": 144, "body": "BUG: empty hashes"},\n'
+        ' {"path": "src/forget.rs", "line": 166, "body": "PERF: serial loop"}]\n'
+        "```"
+    )
+    verdict, body = worker._parse_review(output)
+    assert verdict == ReviewVerdict.REQUEST_CHANGES
+    assert "src/forget.rs" in body
+    assert "BUG: empty hashes" in body
+    assert "PERF: serial loop" in body
+
+
+def test_parse_review_stray_braces_before_json(worker: ReviewWorker) -> None:
+    # No fences: prose contains stray braces, then unfenced JSON object at end.
+    output = (
+        "Looking at the format string `{:>15}` and the dict `{key: value}`,\n"
+        "I think this is fine.\n\n"
+        '{"verdict": "APPROVE", "summary": "All good", "comments": []}'
+    )
+    verdict, body = worker._parse_review(output)
+    assert verdict == ReviewVerdict.APPROVE
+    assert "All good" in body
+
+
+def test_parse_review_prose_verdict_request_changes_dash(worker: ReviewWorker) -> None:
+    # Tolerate "Verdict: Request-Changes" / "Request Changes" variants.
+    output = (
+        "Verdict: Request-Changes\n\n"
+        "```json\n"
+        '[{"path": "a.py", "line": 1, "body": "x"}]\n'
+        "```"
+    )
+    verdict, _ = worker._parse_review(output)
+    assert verdict == ReviewVerdict.REQUEST_CHANGES
+
+
+def test_parse_review_unknown_verdict_falls_back_to_comment(worker: ReviewWorker) -> None:
+    output = '{"verdict": "MAYBE", "summary": "unsure", "comments": []}'
+    verdict, body = worker._parse_review(output)
+    assert verdict == ReviewVerdict.COMMENT
+    assert "unsure" in body
+
+
 @pytest.mark.asyncio
 async def test_review_pr_success(
     worker: ReviewWorker, sample_pr: GitHubPR, tmp_path: Path

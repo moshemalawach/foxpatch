@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from .claude_runner import ClaudeRunner
 from .config import AppConfig
@@ -14,7 +15,60 @@ from .workspace import WorkspaceManager
 
 _EXPLORE_DIFF_FILENAME = ".foxpatch_pr.diff"
 
+_FENCED_JSON_RE = re.compile(r"```(?:json|JSON)?\s*\n?(.*?)```", re.DOTALL)
+_PROSE_VERDICT_RE = re.compile(
+    r"verdict[\s\"'`*:]+(approve|request[_\s-]changes|comment)\b",
+    re.IGNORECASE,
+)
+
 logger = logging.getLogger(__name__)
+
+
+def _find_matching_close(text: str, start: int) -> int | None:
+    """Return the index of the bracket that closes the one at `start`, or None.
+
+    Tracks JSON string literals so braces inside strings don't affect depth.
+    """
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _first_balanced_json(text: str) -> object | None:
+    """Find the largest balanced {...} or [...] span in `text` that parses as JSON."""
+    candidates: list[tuple[int, int]] = []
+    for i, ch in enumerate(text):
+        if ch in "{[":
+            end = _find_matching_close(text, i)
+            if end is not None:
+                candidates.append((i, end + 1))
+    candidates.sort(key=lambda p: -(p[1] - p[0]))
+    for start, end in candidates:
+        try:
+            data: object = json.loads(text[start:end])
+        except json.JSONDecodeError:
+            continue
+        return data
+    return None
 
 
 class ReviewWorker:
@@ -168,35 +222,83 @@ class ReviewWorker:
         self._reviewed.add(self._review_key(pr))
 
     def _parse_review(self, output: str) -> tuple[ReviewVerdict, str]:
-        # Try to extract JSON from the output
+        payload, prose = self._extract_review_payload(output)
+        if payload is None:
+            return ReviewVerdict.COMMENT, output
+
+        if isinstance(payload, dict):
+            verdict = self._coerce_verdict(payload.get("verdict"))
+            summary = payload.get("summary") or ""
+            comments = payload.get("comments") or []
+        elif isinstance(payload, list):
+            # Array-only output (e.g. just the comments list); derive verdict from
+            # surrounding prose and use the prose itself as the summary so the
+            # model's narrative isn't lost.
+            verdict = self._verdict_from_prose(prose) or ReviewVerdict.COMMENT
+            summary = (prose or "").strip()
+            comments = payload
+        else:
+            return ReviewVerdict.COMMENT, output
+
+        body_parts: list[str] = []
+        if isinstance(summary, str) and summary.strip():
+            body_parts.append(summary.strip())
+        for c in comments:
+            if not isinstance(c, dict):
+                continue
+            path = c.get("path", "") or ""
+            line = c.get("line", "")
+            comment_body = c.get("body", "") or ""
+            if path:
+                body_parts.append(f"**`{path}`** (line {line}): {comment_body}")
+            elif comment_body:
+                body_parts.append(comment_body)
+
+        body = "\n\n".join(p for p in body_parts if p)
+        if not body.strip():
+            return verdict, output
+        return verdict, body
+
+    def _extract_review_payload(self, output: str) -> tuple[object | None, str]:
+        """Return (parsed_json, prose_with_json_removed).
+
+        Tries fenced ```json blocks last-to-first (models often emit scratchpad
+        before the final structured JSON), then falls back to scanning for the
+        largest balanced bracket span that parses as JSON.
+        """
+        for match in reversed(list(_FENCED_JSON_RE.finditer(output))):
+            candidate = match.group(1).strip()
+            try:
+                data = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, (dict, list)):
+                prose = (output[: match.start()] + output[match.end() :]).strip()
+                return data, prose
+
+        data = _first_balanced_json(output)
+        if data is None:
+            return None, output
+        return data, output
+
+    @staticmethod
+    def _coerce_verdict(raw: object) -> ReviewVerdict:
+        if not isinstance(raw, str):
+            return ReviewVerdict.COMMENT
         try:
-            # Find JSON block in output
-            start = output.find("{")
-            end = output.rfind("}") + 1
-            if start >= 0 and end > start:
-                data = json.loads(output[start:end])
-                verdict_str = data.get("verdict", "COMMENT").upper()
-                try:
-                    verdict = ReviewVerdict(verdict_str)
-                except ValueError:
-                    verdict = ReviewVerdict.COMMENT
+            return ReviewVerdict(raw.strip().upper().replace(" ", "_").replace("-", "_"))
+        except ValueError:
+            return ReviewVerdict.COMMENT
 
-                summary = data.get("summary", "")
-                comments = data.get("comments", [])
-
-                body_parts = [summary] if summary else []
-                for c in comments:
-                    path = c.get("path", "")
-                    line = c.get("line", "")
-                    comment_body = c.get("body", "")
-                    if path:
-                        body_parts.append(f"**`{path}`** (line {line}): {comment_body}")
-                    else:
-                        body_parts.append(comment_body)
-
-                return verdict, "\n\n".join(body_parts) if body_parts else output
-        except (json.JSONDecodeError, KeyError, TypeError):
-            pass
-
-        # Fallback: use raw output as comment
-        return ReviewVerdict.COMMENT, output
+    @staticmethod
+    def _verdict_from_prose(text: str) -> ReviewVerdict | None:
+        if not text:
+            return None
+        match = _PROSE_VERDICT_RE.search(text)
+        if not match:
+            return None
+        normalized = match.group(1).upper().replace(" ", "_").replace("-", "_")
+        try:
+            return ReviewVerdict(normalized)
+        except ValueError:
+            return None
