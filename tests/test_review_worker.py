@@ -67,6 +67,35 @@ def test_should_review_disabled(worker: ReviewWorker, sample_pr: GitHubPR) -> No
     assert worker.should_review(sample_pr) is False
 
 
+def test_should_review_re_request_overrides_cache(
+    worker: ReviewWorker, sample_pr: GitHubPR
+) -> None:
+    """When the bot is in requested_reviewers, force re-review even at same SHA."""
+    worker.set_bot_user("foxpatch-bot")
+    worker._reviewed.add(worker._review_key(sample_pr))
+    sample_pr.requested_reviewers = ["foxpatch-bot"]
+    assert worker.should_review(sample_pr) is True
+
+
+def test_should_review_re_request_other_user_ignored(
+    worker: ReviewWorker, sample_pr: GitHubPR
+) -> None:
+    """Re-request directed at a different reviewer must not trigger us."""
+    worker.set_bot_user("foxpatch-bot")
+    worker._reviewed.add(worker._review_key(sample_pr))
+    sample_pr.requested_reviewers = ["someone-else"]
+    assert worker.should_review(sample_pr) is False
+
+
+def test_should_review_re_request_without_bot_user(
+    worker: ReviewWorker, sample_pr: GitHubPR
+) -> None:
+    """If bot user is unknown, cache still suppresses re-review."""
+    worker._reviewed.add(worker._review_key(sample_pr))
+    sample_pr.requested_reviewers = ["foxpatch-bot"]
+    assert worker.should_review(sample_pr) is False
+
+
 def test_parse_review_valid_json(worker: ReviewWorker) -> None:
     output = '{"verdict": "APPROVE", "summary": "Looks good", "comments": []}'
     verdict, body = worker._parse_review(output)
@@ -195,6 +224,32 @@ async def test_review_pr_empty_diff(
     worker.github.get_pr_diff = AsyncMock(return_value="")
     result = await worker.review_pr(sample_pr)
     assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_review_pr_empty_body_posts_fallback(
+    worker: ReviewWorker, sample_pr: GitHubPR, tmp_path: Path
+) -> None:
+    """Empty Claude output must still post a review so GitHub clears any
+    pending Re-request review (preventing a polling loop)."""
+    workspace = Workspace(base_dir=tmp_path, primary_repo_dir=tmp_path / "repo")
+    (tmp_path / "repo").mkdir()
+
+    worker.github.get_pr_diff = AsyncMock(return_value="diff --git a/f b/f\n+x")
+    worker.github.post_review = AsyncMock()
+    worker.workspaces.create_review_workspace = AsyncMock(return_value=workspace)
+    worker.workspaces.cleanup = MagicMock()
+    worker.claude.run = AsyncMock(return_value=ClaudeResult(
+        success=True, output="", cost_usd=0.0,
+    ))
+
+    result = await worker.review_pr(sample_pr)
+
+    assert result.success is True
+    worker.github.post_review.assert_called_once()
+    kwargs = worker.github.post_review.call_args.kwargs
+    assert kwargs["event"] == ReviewVerdict.COMMENT.value
+    assert "Re-request review" in kwargs["body"]
 
 
 @pytest.mark.asyncio

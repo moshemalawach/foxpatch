@@ -63,6 +63,7 @@ class GitHubPR:
     labels: list[str] = field(default_factory=list)
     draft: bool = False
     diff: str = ""
+    requested_reviewers: list[str] = field(default_factory=list)
 
 
 @dataclass

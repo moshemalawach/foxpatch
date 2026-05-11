@@ -80,12 +80,21 @@ class GitHubClient:
             "pr", "list",
             "--repo", repo.full_name,
             "--state", "open",
-            "--json", "number,title,body,author,headRefOid,headRefName,baseRefName,labels,isDraft",
+            "--json",
+            "number,title,body,author,headRefOid,headRefName,baseRefName,"
+            "labels,isDraft,reviewRequests",
             "--limit", "50",
         ])
         prs = []
         for item in data:
             labels = [lbl["name"] for lbl in item.get("labels", [])]
+            # Team entries use `slug`; only Users/Bots carry `login`, so a
+            # truthy `login` is enough to filter them in.
+            requested_reviewers = [
+                r["login"]
+                for r in item.get("reviewRequests", [])
+                if isinstance(r, dict) and r.get("login")
+            ]
             prs.append(GitHubPR(
                 repo=repo,
                 number=item["number"],
@@ -97,6 +106,7 @@ class GitHubClient:
                 base_ref=item.get("baseRefName", ""),
                 labels=labels,
                 draft=item.get("isDraft", False),
+                requested_reviewers=requested_reviewers,
             ))
         return prs
 

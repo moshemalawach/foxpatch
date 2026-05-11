@@ -56,6 +56,16 @@ class Orchestrator:
         repos = await self._resolve_repos()
         logger.info("Monitoring %d repositories", len(repos))
 
+        # Cache the authenticated user so ReviewWorker can detect when it
+        # has been added back to a PR's reviewer list ("Re-request review").
+        try:
+            bot_user = await self.github.get_authenticated_user()
+            if bot_user:
+                self.review_worker.set_bot_user(bot_user)
+                logger.info("Authenticated as %s", bot_user)
+        except Exception as e:
+            logger.warning("Could not resolve authenticated user: %s", e)
+
         # Startup: recover stale in-progress issues (e.g. from a crash/restart)
         await self._recover_stale_issues(repos)
 

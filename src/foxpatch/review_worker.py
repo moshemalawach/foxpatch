@@ -88,6 +88,13 @@ class ReviewWorker:
         self._reviewed: set[tuple[str, int, str]] = set()
         self._MAX_REVIEWED_SIZE = 10_000
         self._warmed_up = False
+        # Login of the user gh is authenticated as. When this login appears in
+        # a PR's requested reviewers, treat it as a user-driven "Re-request
+        # review" and force a fresh review even if already done.
+        self._bot_user: str | None = None
+
+    def set_bot_user(self, login: str) -> None:
+        self._bot_user = login
 
     def _review_key(self, pr: GitHubPR) -> tuple[str, int, str]:
         return (pr.repo.full_name, pr.number, pr.head_sha)
@@ -115,6 +122,12 @@ class ReviewWorker:
         labels = self.config.github.labels
         if labels.trigger in pr.labels:
             return False
+
+        # User clicked "Re-request review" on our previous review — GitHub adds
+        # us back to the requested reviewers. Force a fresh review even if we
+        # already covered this SHA. After we post, GitHub clears the request.
+        if self._bot_user and self._bot_user in pr.requested_reviewers:
+            return True
 
         key = self._review_key(pr)
         if key in self._reviewed:
@@ -187,15 +200,20 @@ class ReviewWorker:
             verdict, body = self._parse_review(claude_result.output)
             if not body.strip():
                 logger.warning(
-                    "PR %s#%d: Claude returned empty review body, skipping post",
+                    "PR %s#%d: Claude returned empty review body, posting fallback",
                     pr.repo, pr.number,
                 )
-            else:
-                await self.github.post_review(
-                    pr.repo, pr.number,
-                    body=body,
-                    event=verdict.value,
+                verdict = ReviewVerdict.COMMENT
+                body = (
+                    "⚠️ **autodev** could not generate a review for this PR "
+                    "(empty output from the model).\n\n"
+                    "Click **Re-request review** to retry."
                 )
+            await self.github.post_review(
+                pr.repo, pr.number,
+                body=body,
+                event=verdict.value,
+            )
 
             self._mark_reviewed(pr)
 

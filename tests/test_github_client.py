@@ -44,6 +44,47 @@ async def test_list_prs(client: GitHubClient, gh_prs_json: list[dict]) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_prs_parses_requested_reviewers(client: GitHubClient) -> None:
+    client._run_gh_json = AsyncMock(return_value=[{
+        "number": 200,
+        "title": "Test",
+        "body": "",
+        "author": {"login": "alice"},
+        "headRefOid": "sha",
+        "headRefName": "feat",
+        "baseRefName": "main",
+        "labels": [],
+        "isDraft": False,
+        "reviewRequests": [
+            {"__typename": "User", "login": "foxpatch-bot"},
+            {"__typename": "Team", "slug": "reviewers"},
+            {"__typename": "User", "login": "human-reviewer"},
+        ],
+    }])
+    repo = RepoRef(owner="test-org", name="test-repo")
+    prs = await client.list_prs(repo)
+    assert prs[0].requested_reviewers == ["foxpatch-bot", "human-reviewer"]
+
+
+@pytest.mark.asyncio
+async def test_list_prs_missing_review_requests(client: GitHubClient) -> None:
+    client._run_gh_json = AsyncMock(return_value=[{
+        "number": 201,
+        "title": "T",
+        "body": "",
+        "author": {"login": "a"},
+        "headRefOid": "s",
+        "headRefName": "b",
+        "baseRefName": "main",
+        "labels": [],
+        "isDraft": False,
+    }])
+    repo = RepoRef(owner="test-org", name="test-repo")
+    prs = await client.list_prs(repo)
+    assert prs[0].requested_reviewers == []
+
+
+@pytest.mark.asyncio
 async def test_add_label_dry_run(dry_client: GitHubClient) -> None:
     repo = RepoRef(owner="test-org", name="test-repo")
     # Should not raise, should be a no-op
