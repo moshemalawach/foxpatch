@@ -6,6 +6,45 @@ from typing import Any
 
 from .models import GitHubIssue, GitHubPR, PRReview
 
+_REVIEW_OUTPUT_FORMAT = [
+    "## Output Format",
+    "",
+    "End your response with a single fenced JSON block matching this exact schema."
+    " The JSON MUST be valid and parseable by a strict JSON parser (e.g. Python"
+    " `json.loads`).",
+    "",
+    "```json",
+    "{",
+    '  "verdict": "APPROVE",',
+    '  "summary": "one-paragraph overall assessment",',
+    '  "comments": [',
+    "    {",
+    '      "path": "src/example.py",',
+    '      "line": 42,',
+    '      "body": "use `context(\\"...\\")` here — note the escaped inner quotes"',
+    "    }",
+    "  ]",
+    "}",
+    "```",
+    "",
+    "**Common JSON mistakes to avoid:**",
+    "- Inner double quotes inside string values MUST be escaped as `\\\"`. Write"
+    ' `"body": "call \\"foo\\""` — NOT `"body": "call "foo""`. This includes quotes'
+    " inside backticked code spans (e.g. `\\\"context(\\\\\"x\\\\\")\\\"`).",
+    "- `line` is a JSON integer, not a string. Write `\"line\": 42` — NOT"
+    ' `"line": "42"` or `"line": 42",` (a stray closing quote after a number is'
+    " the most common bug).",
+    "- The top-level MUST be an object `{...}` containing `verdict`, `summary`,"
+    " and `comments`. Do NOT emit a bare array `[...]`.",
+    "- `verdict` must be exactly one of `\"APPROVE\"`, `\"REQUEST_CHANGES\"`, or"
+    ' `"COMMENT"` — no other values.',
+    "",
+    "**Verdict guidance:**",
+    "- APPROVE: code is correct and well-written, even with minor nits.",
+    "- COMMENT: suggestions, style nits, non-blocking observations.",
+    "- REQUEST_CHANGES: only for genuine bugs or security issues.",
+]
+
 
 def build_issue_resolution_prompt(issue: GitHubIssue) -> str:
     parts = [
@@ -81,26 +120,7 @@ def build_pr_review_prompt(pr: GitHubPR) -> str:
         "- **Testing:** Missing test coverage for new or changed behavior",
         "- **Documentation:** Missing or outdated comments for non-obvious logic",
         "",
-        "## Output Format",
-        "",
-        "Respond with a JSON object:",
-        "```json",
-        '{',
-        '  "verdict": "APPROVE" | "REQUEST_CHANGES" | "COMMENT",',
-        '  "summary": "One-paragraph overall assessment",',
-        '  "comments": [',
-        '    {',
-        '      "path": "file/path.py",',
-        '      "line": 42,',
-        '      "body": "Description of the issue or suggestion"',
-        '    }',
-        '  ]',
-        '}',
-        "```",
-        "",
-        "Only use REQUEST_CHANGES for genuine bugs or security issues.",
-        "Use COMMENT for suggestions and style nits.",
-        "Use APPROVE if the code is correct and well-written, even with minor nits.",
+        *_REVIEW_OUTPUT_FORMAT,
     ]
 
     return "\n".join(parts)
@@ -165,26 +185,7 @@ def build_pr_review_prompt_explore(
         "- **Testing:** Missing test coverage for new or changed behavior",
         "- **Documentation:** Missing or outdated comments for non-obvious logic",
         "",
-        "## Output Format",
-        "",
-        "Respond with a JSON object:",
-        "```json",
-        '{',
-        '  "verdict": "APPROVE" | "REQUEST_CHANGES" | "COMMENT",',
-        '  "summary": "One-paragraph overall assessment",',
-        '  "comments": [',
-        '    {',
-        '      "path": "file/path.py",',
-        '      "line": 42,',
-        '      "body": "Description of the issue or suggestion"',
-        '    }',
-        '  ]',
-        '}',
-        "```",
-        "",
-        "Only use REQUEST_CHANGES for genuine bugs or security issues.",
-        "Use COMMENT for suggestions and style nits.",
-        "Use APPROVE if the code is correct and well-written, even with minor nits.",
+        *_REVIEW_OUTPUT_FORMAT,
     ]
 
     return "\n".join(parts)
