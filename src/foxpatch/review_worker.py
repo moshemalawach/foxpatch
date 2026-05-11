@@ -20,6 +20,16 @@ _PROSE_VERDICT_RE = re.compile(
     r"verdict[\s\"'`*:]+(approve|request[_\s-]changes|comment)\b",
     re.IGNORECASE,
 )
+_REVIEW_KEYS = frozenset({"verdict", "summary", "comments"})
+
+
+def _looks_like_review(data: object) -> bool:
+    """True if `data` plausibly is a review payload (dict with review keys or list)."""
+    if isinstance(data, list):
+        return True
+    if isinstance(data, dict):
+        return bool(_REVIEW_KEYS & data.keys())
+    return False
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +64,13 @@ def _find_matching_close(text: str, start: int) -> int | None:
 
 
 def _first_balanced_json(text: str) -> object | None:
-    """Find the largest balanced {...} or [...] span in `text` that parses as JSON."""
+    """Find the largest review-shaped balanced {...} or [...] span in `text`.
+
+    When the outer review JSON is malformed (e.g. unescaped inner quotes), the
+    largest parseable span is often an inner comment dict — useless as a review
+    payload. So we skip dicts that lack any of the review keys, returning the
+    largest *review-shaped* result instead.
+    """
     candidates: list[tuple[int, int]] = []
     for i, ch in enumerate(text):
         if ch in "{[":
@@ -67,7 +83,8 @@ def _first_balanced_json(text: str) -> object | None:
             data: object = json.loads(text[start:end])
         except json.JSONDecodeError:
             continue
-        return data
+        if _looks_like_review(data):
+            return data
     return None
 
 
@@ -240,9 +257,12 @@ class ReviewWorker:
         self._reviewed.add(self._review_key(pr))
 
     def _parse_review(self, output: str) -> tuple[ReviewVerdict, str]:
+        # No structured payload → return empty body so review_pr's empty-body
+        # fallback posts a "could not generate" message instead of dumping the
+        # raw model output as the review (which surfaced hallucinated content).
         payload, prose = self._extract_review_payload(output)
         if payload is None:
-            return ReviewVerdict.COMMENT, output
+            return ReviewVerdict.COMMENT, ""
 
         if isinstance(payload, dict):
             verdict = self._coerce_verdict(payload.get("verdict"))
@@ -256,7 +276,7 @@ class ReviewWorker:
             summary = (prose or "").strip()
             comments = payload
         else:
-            return ReviewVerdict.COMMENT, output
+            return ReviewVerdict.COMMENT, ""
 
         body_parts: list[str] = []
         if isinstance(summary, str) and summary.strip():
@@ -274,7 +294,9 @@ class ReviewWorker:
 
         body = "\n\n".join(p for p in body_parts if p)
         if not body.strip():
-            return verdict, output
+            # Same rationale as the payload-is-None branch above: never let the
+            # raw output escape as a review body.
+            return verdict, ""
         return verdict, body
 
     def _extract_review_payload(self, output: str) -> tuple[object | None, str]:

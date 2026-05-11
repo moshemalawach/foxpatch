@@ -114,11 +114,59 @@ def test_parse_review_with_comments(worker: ReviewWorker) -> None:
     assert "Bug here" in body
 
 
-def test_parse_review_invalid_json(worker: ReviewWorker) -> None:
+def test_parse_review_no_json_returns_empty(worker: ReviewWorker) -> None:
+    """Output with no structured payload returns empty body (not raw text).
+
+    review_pr posts its "could not generate a review" fallback when body is
+    empty — preventing hallucinated prose from being posted as a review.
+    """
     output = "This is just a plain text review"
     verdict, body = worker._parse_review(output)
     assert verdict == ReviewVerdict.COMMENT
-    assert body == output
+    assert body == ""
+
+
+def test_parse_review_off_topic_hallucination_returns_empty(
+    worker: ReviewWorker,
+) -> None:
+    """Regression: aleph-rs#199 / aleph-vm#946 — model hallucinated off-topic
+    content with no parseable review payload, and the raw garbage was posted."""
+    output = (
+        "## 2026-08-01 Social Security Payment Schedule\n"
+        "- August 1st falls on a Saturday in 2026\n"
+        "- Second Wednesday: August 12, 2026 (birth dates 1st–10th)\n"
+    )
+    verdict, body = worker._parse_review(output)
+    assert verdict == ReviewVerdict.COMMENT
+    assert body == ""
+
+
+def test_parse_review_malformed_outer_with_inner_comment_dict(
+    worker: ReviewWorker,
+) -> None:
+    """Regression: aleph-rs#195 — fenced JSON has unescaped inner quotes in a
+    comment body. The outer dict fails to parse, but an inner {path,line,body}
+    dict parses. Don't mistake that for a review."""
+    output = (
+        "Now I have a thorough understanding. Let me compile my review.\n\n"
+        "```json\n"
+        '{"verdict": "APPROVE", "summary": "ok",\n'
+        ' "comments": [\n'
+        '  {"path": "a.rs", "line": 1, "body": "first"},\n'
+        # Unescaped inner quotes break the outer parse
+        '  {"path": "b.rs", "line": 2, "body": "consider using `context("...")` here"}\n'
+        " ]}\n"
+        "```\n"
+        "Trailing prose."
+    )
+    verdict, body = worker._parse_review(output)
+    assert verdict == ReviewVerdict.COMMENT
+    # No review-shape payload extracted → empty body → review_pr posts fallback.
+    assert body == ""
+    # Critically: the scratchpad / trailing prose / broken JSON must NOT leak.
+    assert "Now I have a thorough understanding" not in body
+    assert "Trailing prose" not in body
+    assert "context(" not in body
 
 
 def test_parse_review_fenced_json_with_scratchpad(worker: ReviewWorker) -> None:
