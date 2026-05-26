@@ -40,6 +40,8 @@ claude:
   model_for_issues: "opus"
   model_for_reviews: "sonnet"
   max_turns: 50
+  max_turns_review: 40
+  max_turns_review_explore: 80
   max_budget_usd: 5.0
   max_budget_usd_review: 1.0
   timeout_seconds: 1800

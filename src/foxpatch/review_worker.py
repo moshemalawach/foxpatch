@@ -195,10 +195,10 @@ class ReviewWorker:
                     )
                     files = []
                 prompt = build_pr_review_prompt_explore(pr, files, _EXPLORE_DIFF_FILENAME)
-                max_turns = 40
+                max_turns = self.config.claude.max_turns_review_explore
             else:
                 prompt = build_pr_review_prompt(pr)
-                max_turns = 20
+                max_turns = self.config.claude.max_turns_review
 
             # 4. Run Claude review
             review_tools = ["Read", "Glob", "Grep"]

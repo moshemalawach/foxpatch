@@ -56,6 +56,8 @@ class ClaudeConfig:
     model_for_issues: str = "opus"
     model_for_reviews: str = "sonnet"
     max_turns: int = 50
+    max_turns_review: int = 40
+    max_turns_review_explore: int = 80
     max_budget_usd: float = 5.0
     max_budget_usd_review: float = 1.0
     timeout_seconds: int = 1800
