@@ -73,7 +73,8 @@ class WorkspaceManager:
         logger.info("Creating review workspace at %s", task_dir)
 
         repo_dir = task_dir / pr.repo.name
-        await self._clone_repo(pr.repo, repo_dir, shallow=True, branch=pr.head_ref)
+        await self._clone_repo(pr.repo, repo_dir, shallow=True)
+        await self._checkout_pr(pr, repo_dir)
 
         return Workspace(
             base_dir=task_dir,
@@ -94,7 +95,8 @@ class WorkspaceManager:
         logger.info("Creating revision workspace at %s", task_dir)
 
         primary_dir = task_dir / pr.repo.name
-        await self._clone_repo(pr.repo, primary_dir, branch=pr.head_ref)
+        await self._clone_repo(pr.repo, primary_dir)
+        await self._checkout_pr(pr, primary_dir)
 
         additional_dirs: list[Path] = []
         if repo_group:
@@ -125,6 +127,25 @@ class WorkspaceManager:
         args.extend([url, str(dest)])
         logger.info("Cloning %s to %s", repo, dest)
         await run_git(args, exc_type=WorkspaceError)
+
+    async def _checkout_pr(self, pr: GitHubPR, repo_dir: Path) -> None:
+        """Check out a PR branch via gh, which handles fork-based PRs.
+
+        Cloning the upstream repo with --branch {head_ref} fails when the PR
+        branch lives on a fork; `gh pr checkout` fetches the right ref and
+        configures the branch so a plain `git push` targets the PR's source.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "gh", "pr", "checkout", str(pr.number),
+            cwd=repo_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise WorkspaceError(
+                f"gh pr checkout {pr.number} failed: {stderr.decode().strip()}"
+            )
 
     def _ensure_base_dir(self) -> Path:
         self.base_dir.mkdir(parents=True, exist_ok=True)

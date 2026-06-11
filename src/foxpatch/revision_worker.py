@@ -163,6 +163,12 @@ class RevisionWorker:
 
     async def _push_revision(self, repo_dir: Path, pr: GitHubPR) -> None:
         """Push revision commits to the PR branch."""
+        # The workspace was checked out via `gh pr checkout`, which configures
+        # the branch's push target (including fork remotes) — try that first.
+        result = await run_git(["push"], cwd=repo_dir, check=False)
+        if result.returncode == 0:
+            return
+
         result = await run_git(["push", "origin", pr.head_ref], cwd=repo_dir, check=False)
         if result.returncode == 0:
             return
