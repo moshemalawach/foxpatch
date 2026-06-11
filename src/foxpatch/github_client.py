@@ -237,7 +237,8 @@ class GitHubClient:
             "repo", "view", repo.full_name,
             "--json", "defaultBranchRef",
         ])
-        return data.get("defaultBranchRef", {}).get("name", "main")
+        name = data.get("defaultBranchRef", {}).get("name")
+        return str(name) if name else "main"
 
     async def get_pr_reviews(self, repo: RepoRef, number: int) -> list[PRReview]:
         """Fetch reviews on a PR."""

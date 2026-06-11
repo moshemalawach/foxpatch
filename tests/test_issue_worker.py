@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -11,7 +11,7 @@ from foxpatch.claude_runner import ClaudeRunner
 from foxpatch.config import AppConfig
 from foxpatch.github_client import GitHubClient
 from foxpatch.issue_worker import IssueWorker
-from foxpatch.models import ClaudeResult, GitHubIssue, RepoRef, Workspace
+from foxpatch.models import ClaudeResult, GitHubIssue, Workspace
 from foxpatch.state import StateManager
 from foxpatch.workspace import WorkspaceManager
 

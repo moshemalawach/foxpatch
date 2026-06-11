@@ -70,7 +70,9 @@ class ClaudeRunner:
         add_dirs: list[Path] | None = None,
     ) -> ClaudeResult:
         if self.dry_run:
-            logger.info("[DRY RUN] Would run Claude with model=%s, budget=$%.2f", model, max_budget_usd)
+            logger.info(
+                "[DRY RUN] Would run Claude with model=%s, budget=$%.2f", model, max_budget_usd,
+            )
             return ClaudeResult(success=True, output="[dry run]")
 
         cmd = self._build_command(
@@ -83,7 +85,10 @@ class ClaudeRunner:
             add_dirs=add_dirs,
         )
 
-        logger.info("Starting Claude (model=%s, budget=$%.2f, timeout=%ds)", model, max_budget_usd, timeout_seconds)
+        logger.info(
+            "Starting Claude (model=%s, budget=$%.2f, timeout=%ds)",
+            model, max_budget_usd, timeout_seconds,
+        )
         start = time.monotonic()
 
         try:
@@ -104,8 +109,8 @@ class ClaudeRunner:
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
-            proc.kill()  # type: ignore[union-attr]
-            await proc.wait()  # type: ignore[union-attr]
+            proc.kill()
+            await proc.wait()
             duration = time.monotonic() - start
             raise ClaudeTimeoutError(
                 f"Claude process timed out after {duration:.0f}s"

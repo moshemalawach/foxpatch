@@ -10,7 +10,7 @@ import pytest
 from foxpatch.claude_runner import ClaudeRunner
 from foxpatch.config import AppConfig
 from foxpatch.github_client import GitHubClient
-from foxpatch.models import ClaudeResult, GitHubPR, RepoRef, ReviewVerdict, Workspace
+from foxpatch.models import ClaudeResult, GitHubPR, ReviewVerdict, Workspace
 from foxpatch.review_worker import ReviewWorker
 from foxpatch.workspace import WorkspaceManager
 
