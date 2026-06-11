@@ -68,6 +68,8 @@ class ClaudeConfig:
     max_turns_review_explore: int = 80
     max_budget_usd: float = 5.0
     max_budget_usd_review: float = 1.0
+    # Total spend across all tasks per calendar day; 0 = unlimited.
+    max_daily_cost_usd: float = 0.0
     timeout_seconds: int = 1800
     allowed_tools: list[str] = field(default_factory=lambda: [
         "Read", "Edit", "Write", "Glob", "Grep",
@@ -167,6 +169,8 @@ class AppConfig:
             raise ConfigError("max_parallel_reviews must be >= 1")
         if self.claude.timeout_seconds < 60:
             raise ConfigError("claude.timeout_seconds must be >= 60")
+        if self.claude.max_daily_cost_usd < 0:
+            raise ConfigError("claude.max_daily_cost_usd must be >= 0")
         for name, group in self.repo_groups.items():
             if not group.repos:
                 raise ConfigError(f"Repo group '{name}' must have at least one repo")

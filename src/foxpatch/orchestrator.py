@@ -8,6 +8,7 @@ import signal
 
 from .claude_runner import ClaudeRunner
 from .config import AppConfig
+from .costs import CostTracker
 from .github_client import GitHubClient
 from .issue_worker import IssueWorker
 from .models import GitHubIssue, GitHubPR, RepoRef
@@ -41,6 +42,7 @@ class Orchestrator:
 
         self._task_semaphore = asyncio.Semaphore(config.concurrency.max_parallel_tasks)
         self._review_semaphore = asyncio.Semaphore(config.concurrency.max_parallel_reviews)
+        self.costs = CostTracker(config.claude.max_daily_cost_usd)
 
     async def start(self, once: bool = False) -> None:
         loop = asyncio.get_running_loop()
@@ -90,6 +92,14 @@ class Orchestrator:
         logger.info("Orchestrator shutting down gracefully")
 
     async def _run_cycle(self, repos: list[RepoRef]) -> None:
+        if self.costs.limit_reached():
+            logger.warning(
+                "Daily cost limit reached ($%.2f spent, limit $%.2f) — pausing dispatch "
+                "until midnight",
+                self.costs.spent_today_usd, self.costs.daily_limit_usd,
+            )
+            return
+
         # Poll all repos concurrently; each returns the tasks it dispatched.
         per_repo = await asyncio.gather(*[self._poll_repo(repo) for repo in repos])
         tasks = [task for repo_tasks in per_repo for task in repo_tasks]
@@ -127,11 +137,13 @@ class Orchestrator:
 
     async def _dispatch_issue(self, issue: GitHubIssue) -> None:
         async with self._task_semaphore:
-            await self.issue_worker.process_issue(issue)
+            result = await self.issue_worker.process_issue(issue)
+            self.costs.record(result.cost_usd)
 
     async def _dispatch_review(self, pr: GitHubPR) -> None:
         async with self._review_semaphore:
-            await self.review_worker.review_pr(pr)
+            result = await self.review_worker.review_pr(pr)
+            self.costs.record(result.cost_usd)
 
     async def _dispatch_revision(self, pr: GitHubPR) -> None:
         try:
@@ -143,7 +155,8 @@ class Orchestrator:
             )
             return
         async with self._task_semaphore:
-            await self.revision_worker.revise_pr(pr)
+            result = await self.revision_worker.revise_pr(pr)
+            self.costs.record(result.cost_usd)
 
     async def _resolve_repos(self) -> list[RepoRef]:
         repos: list[RepoRef] = []

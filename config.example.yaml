@@ -11,11 +11,13 @@ github:
     failed: "autodev:failed"
   poll_interval_issues: 120  # seconds
   poll_interval_prs: 180
+  max_issue_attempts: 2      # retries for issues interrupted by a restart
   review:
     enabled: true
     skip_bot_prs: false
     skip_authors: []
     re_review_on_push: true
+    max_pr_age_days: 30      # skip PRs with no activity for this long (0 = no limit)
 
 repo_groups:
   aleph-core:
@@ -44,6 +46,7 @@ claude:
   max_turns_review_explore: 80
   max_budget_usd: 5.0
   max_budget_usd_review: 1.0
+  max_daily_cost_usd: 0.0    # total daily spend cap across all tasks (0 = unlimited)
   timeout_seconds: 1800
   allowed_tools:
     - Read
