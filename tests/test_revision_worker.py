@@ -44,19 +44,6 @@ async def test_needs_revision_not_autodev_pr(
     assert await revision_worker.needs_revision(sample_pr) is False
 
 
-async def test_needs_revision_already_revised(
-    revision_worker: RevisionWorker, autodev_pr: GitHubPR,
-) -> None:
-    revision_worker.github.get_pr_reviews = AsyncMock(return_value=[
-        PRReview(
-            author="reviewer", state="CHANGES_REQUESTED",
-            body="Fix tests", commit_sha="abc123",
-        ),
-    ])
-    await revision_worker.mark_seen(autodev_pr)
-    assert await revision_worker.needs_revision(autodev_pr) is False
-
-
 async def test_needs_revision_no_changes_requested(
     revision_worker: RevisionWorker, autodev_pr: GitHubPR,
 ) -> None:
@@ -66,7 +53,7 @@ async def test_needs_revision_no_changes_requested(
     assert await revision_worker.needs_revision(autodev_pr) is False
 
 
-async def test_needs_revision_with_changes_requested(
+async def test_needs_revision_review_on_current_head(
     revision_worker: RevisionWorker, autodev_pr: GitHubPR,
 ) -> None:
     revision_worker.github.get_pr_reviews = AsyncMock(return_value=[
@@ -75,30 +62,27 @@ async def test_needs_revision_with_changes_requested(
             body="Fix tests", commit_sha="abc123",
         ),
     ])
-    revision_worker.github.get_pr_check_failures = AsyncMock(return_value=[])
     assert await revision_worker.needs_revision(autodev_pr) is True
 
 
-async def test_needs_revision_with_ci_failures_only(
+async def test_needs_revision_review_on_old_head_skipped(
     revision_worker: RevisionWorker, autodev_pr: GitHubPR,
 ) -> None:
-    # REQUEST_CHANGES review exists but already revised — CI failures alone
-    # should NOT re-trigger (this prevents loops after push)
+    # Feedback was given on an older commit; we already pushed past it,
+    # so it must not re-trigger (prevents revision loops).
     revision_worker.github.get_pr_reviews = AsyncMock(return_value=[
         PRReview(
             author="reviewer", state="CHANGES_REQUESTED",
             body="Fix tests", commit_sha="old-sha",
         ),
     ])
-    # Mark as already revised with 1 CHANGES_REQUESTED review
-    revision_worker._revised[revision_worker._revision_key(autodev_pr)] = 1
     assert await revision_worker.needs_revision(autodev_pr) is False
 
 
-async def test_needs_revision_new_review_after_revision(
+async def test_needs_revision_new_review_on_new_head(
     revision_worker: RevisionWorker, autodev_pr: GitHubPR,
 ) -> None:
-    # A NEW REQUEST_CHANGES review after our revision should re-trigger
+    # Old addressed feedback plus a fresh review on the current head.
     revision_worker.github.get_pr_reviews = AsyncMock(return_value=[
         PRReview(
             author="reviewer1", state="CHANGES_REQUESTED",
@@ -106,12 +90,24 @@ async def test_needs_revision_new_review_after_revision(
         ),
         PRReview(
             author="reviewer2", state="CHANGES_REQUESTED",
-            body="Also fix docs", commit_sha="new-sha",
+            body="Also fix docs", commit_sha="abc123",
         ),
     ])
-    # We previously revised when there was only 1 review
-    revision_worker._revised[revision_worker._revision_key(autodev_pr)] = 1
     assert await revision_worker.needs_revision(autodev_pr) is True
+
+
+async def test_needs_revision_gives_up_after_failures(
+    revision_worker: RevisionWorker, autodev_pr: GitHubPR,
+) -> None:
+    revision_worker.github.get_pr_reviews = AsyncMock(return_value=[
+        PRReview(
+            author="reviewer", state="CHANGES_REQUESTED",
+            body="Fix tests", commit_sha="abc123",
+        ),
+    ])
+    key = revision_worker._revision_key(autodev_pr)
+    revision_worker._failures[key] = revision_worker._MAX_REVISION_ATTEMPTS
+    assert await revision_worker.needs_revision(autodev_pr) is False
 
 
 async def test_revise_pr_success(
@@ -146,11 +142,10 @@ async def test_revise_pr_success(
     result = await revision_worker.revise_pr(autodev_pr)
     assert result.success is True
     revision_worker.workspaces.cleanup.assert_called_once()
-    # Should be tracked as revised
-    assert revision_worker._revision_key(autodev_pr) in revision_worker._revised
+    assert revision_worker._failures == {}
 
 
-async def test_revise_pr_claude_fails(
+async def test_revise_pr_claude_fails_retries_then_gives_up(
     revision_worker: RevisionWorker, autodev_pr: GitHubPR, tmp_path: Path,
 ) -> None:
     workspace = Workspace(
@@ -160,7 +155,11 @@ async def test_revise_pr_claude_fails(
     )
     (tmp_path / "repo").mkdir()
 
-    revision_worker.github.get_pr_reviews = AsyncMock(return_value=[])
+    reviews = [PRReview(
+        author="reviewer", state="CHANGES_REQUESTED",
+        body="Fix tests", commit_sha="abc123",
+    )]
+    revision_worker.github.get_pr_reviews = AsyncMock(return_value=reviews)
     revision_worker.github.get_pr_check_failures = AsyncMock(return_value=[])
     revision_worker.github.get_pr_comments = AsyncMock(return_value=[])
     revision_worker.github.post_comment = AsyncMock()
@@ -174,20 +173,15 @@ async def test_revise_pr_claude_fails(
 
     result = await revision_worker.revise_pr(autodev_pr)
     assert result.success is False
-    # Should still be tracked (to avoid retry loop)
-    assert revision_worker._revision_key(autodev_pr) in revision_worker._revised
+    # First failure: no give-up comment yet, retry still allowed
+    revision_worker.github.post_comment.assert_called_once()  # only "working on it"
+    assert await revision_worker.needs_revision(autodev_pr) is True
 
-
-async def test_mark_seen(
-    revision_worker: RevisionWorker, autodev_pr: GitHubPR,
-) -> None:
-    revision_worker.github.get_pr_reviews = AsyncMock(return_value=[
-        PRReview(
-            author="reviewer", state="CHANGES_REQUESTED",
-            body="Fix tests", commit_sha="abc123",
-        ),
-    ])
-    await revision_worker.mark_seen(autodev_pr)
-    key = revision_worker._revision_key(autodev_pr)
-    assert key in revision_worker._revised
-    assert revision_worker._revised[key] == 1
+    await revision_worker.revise_pr(autodev_pr)
+    # Second failure: gave up — failure comment posted, no more retries
+    assert await revision_worker.needs_revision(autodev_pr) is False
+    failure_comments = [
+        c for c in revision_worker.github.post_comment.call_args_list
+        if "failed to address" in c.args[2]
+    ]
+    assert len(failure_comments) == 1

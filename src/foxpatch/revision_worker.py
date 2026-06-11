@@ -29,43 +29,39 @@ class RevisionWorker:
         self.github = github
         self.claude = claude
         self.workspaces = workspaces
-        # Track which (repo, pr_number) we've already revised, and how many
-        # CHANGES_REQUESTED reviews existed when we last revised.  A new review
-        # (higher count) will re-trigger revision.
-        self._revised: dict[tuple[str, int], int] = {}
-        self._MAX_REVISED_SIZE = 5_000
+        # Failed revision attempts per (repo, number, head_sha); after
+        # _MAX_REVISION_ATTEMPTS we stop retrying that PR version.
+        self._failures: dict[tuple[str, int, str], int] = {}
+        self._MAX_REVISION_ATTEMPTS = 2
+        self._MAX_FAILURES_SIZE = 5_000
 
-    def _revision_key(self, pr: GitHubPR) -> tuple[str, int]:
-        """Key by (repo, pr_number) — not sha — to prevent re-processing loops."""
-        return (pr.repo.full_name, pr.number)
-
-    async def mark_seen(self, pr: GitHubPR) -> None:
-        """Mark a PR as already seen (used for warm-up)."""
-        reviews = await self.github.get_pr_reviews(pr.repo, pr.number)
-        count = sum(1 for r in reviews if r.state == "CHANGES_REQUESTED")
-        self._revised[self._revision_key(pr)] = count
+    def _revision_key(self, pr: GitHubPR) -> tuple[str, int, str]:
+        return (pr.repo.full_name, pr.number, pr.head_sha)
 
     async def needs_revision(self, pr: GitHubPR) -> bool:
-        """Check if a PR is ours and has unaddressed REQUEST_CHANGES reviews."""
+        """True if this is our PR and the current head has unaddressed
+        CHANGES_REQUESTED feedback.
+
+        A review belongs to the commit it was made on (commit_sha). Once we
+        push revision commits the head moves, so old feedback stops
+        triggering and only a fresh review on the new head re-triggers.
+        This derives entirely from GitHub state: no warm-up is needed and
+        restarts lose nothing.
+        """
         labels = self.config.github.labels
 
         # Only revise PRs with the trigger label (our own PRs)
         if labels.trigger not in pr.labels:
             return False
 
-        # Check for REQUEST_CHANGES reviews
-        reviews = await self.github.get_pr_reviews(pr.repo, pr.number)
-        changes_requested_count = sum(
-            1 for r in reviews if r.state == "CHANGES_REQUESTED"
-        )
-        if changes_requested_count == 0:
+        if self._failures.get(self._revision_key(pr), 0) >= self._MAX_REVISION_ATTEMPTS:
             return False
 
-        # Only re-trigger if the number of REQUEST_CHANGES reviews has
-        # increased since our last revision (meaning a human posted a new one).
-        key = self._revision_key(pr)
-        prev_count = self._revised.get(key, 0)
-        return changes_requested_count > prev_count
+        reviews = await self.github.get_pr_reviews(pr.repo, pr.number)
+        return any(
+            r.state == "CHANGES_REQUESTED" and r.commit_sha == pr.head_sha
+            for r in reviews
+        )
 
     async def revise_pr(self, pr: GitHubPR) -> TaskResult:
         logger.info("Revising PR %s#%d: %s", pr.repo, pr.number, pr.title)
@@ -115,16 +111,8 @@ class RevisionWorker:
             # 6. Push to the same branch (try direct, fall back to fork remote)
             await self._push_revision(workspace.primary_repo_dir, pr)
 
-            # 7. Track as revised — store current count of CHANGES_REQUESTED
-            if len(self._revised) >= self._MAX_REVISED_SIZE:
-                keys = list(self._revised.keys())
-                for k in keys[: self._MAX_REVISED_SIZE // 2]:
-                    del self._revised[k]
-            changes_requested_count = sum(
-                1 for r in reviews if r.state == "CHANGES_REQUESTED"
-            )
-            self._revised[self._revision_key(pr)] = changes_requested_count
-
+            # 7. Done — pushing moved the PR head, so the feedback we just
+            # addressed no longer matches the new head and won't re-trigger.
             await self.github.post_comment(
                 pr.repo, pr.number,
                 "✅ Review feedback addressed. Pushed new commits.",
@@ -137,19 +125,26 @@ class RevisionWorker:
             return TaskResult(success=True, pr_url="", cost_usd=claude_result.cost_usd)
 
         except Exception as e:
-            logger.error("Failed to revise PR %s#%d: %s", pr.repo, pr.number, e)
-            try:
-                error_type = type(e).__name__
-                await self.github.post_comment(
-                    pr.repo, pr.number,
-                    f"❌ **autodev** failed to address review feedback.\n\n"
-                    f"**Error type:** `{error_type}`",
-                )
-                # Mark as revised so we don't retry endlessly — use a high
-                # count so only genuinely new reviews re-trigger
-                self._revised[self._revision_key(pr)] = 999
-            except Exception as post_err:
-                logger.error("Failed to post failure comment: %s", post_err)
+            key = self._revision_key(pr)
+            if len(self._failures) >= self._MAX_FAILURES_SIZE:
+                self._failures.clear()
+            self._failures[key] = self._failures.get(key, 0) + 1
+            gave_up = self._failures[key] >= self._MAX_REVISION_ATTEMPTS
+            logger.error(
+                "Failed to revise PR %s#%d (attempt %d/%d): %s",
+                pr.repo, pr.number, self._failures[key], self._MAX_REVISION_ATTEMPTS, e,
+            )
+            if gave_up:
+                try:
+                    error_type = type(e).__name__
+                    await self.github.post_comment(
+                        pr.repo, pr.number,
+                        f"❌ **autodev** failed to address review feedback.\n\n"
+                        f"**Error type:** `{error_type}`\n\n"
+                        f"Post a new review to retry.",
+                    )
+                except Exception as post_err:
+                    logger.error("Failed to post failure comment: %s", post_err)
             return TaskResult(success=False, error_message=str(e))
 
         finally:

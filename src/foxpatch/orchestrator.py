@@ -69,11 +69,6 @@ class Orchestrator:
         # Startup: recover stale in-progress issues (e.g. from a crash/restart)
         await self._recover_stale_issues(repos)
 
-        # Warm-up the revision worker so existing review feedback isn't
-        # re-processed on startup. (The review worker needs no warm-up: its
-        # state is derived from the bot's posted reviews on GitHub.)
-        await self._warmup_prs(repos)
-
         if once:
             await self._run_cycle(repos)
             return
@@ -186,23 +181,6 @@ class Orchestrator:
         count = sum(results)
         if count:
             logger.info("Recovered %d stale in-progress issues", count)
-
-    async def _warmup_prs(self, repos: list[RepoRef]) -> None:
-        """Mark all existing open PRs as seen so we only review/revise new activity."""
-
-        async def check_repo(repo: RepoRef) -> int:
-            try:
-                prs = await self.github.list_prs(repo)
-                for pr in prs:
-                    await self.revision_worker.mark_seen(pr)
-                return len(prs)
-            except Exception as e:
-                logger.error("Error during PR warm-up for %s: %s", repo, e)
-                return 0
-
-        results = await asyncio.gather(*[check_repo(r) for r in repos])
-        count = sum(results)
-        logger.info("PR warm-up complete: marked %d existing PRs as seen", count)
 
     def _handle_signal(self) -> None:
         logger.info("Received shutdown signal")
