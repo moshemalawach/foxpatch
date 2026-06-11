@@ -164,22 +164,39 @@ class Orchestrator:
         return repos
 
     async def _recover_stale_issues(self, repos: list[RepoRef]) -> None:
-        """Reset in-progress issues back to actionable state on startup."""
+        """Requeue (or fail) issues left in-progress by a crash/restart."""
         labels = self.config.github.labels
+        max_attempts = self.config.github.max_issue_attempts
 
         async def check_repo(repo: RepoRef) -> int:
             try:
                 issues = await self.github.list_issues(repo, labels.in_progress)
                 for issue in issues:
-                    logger.warning(
-                        "Recovering stale in-progress issue %s#%d", repo, issue.number,
-                    )
-                    await self.state.transition_to_failed(repo, issue.number)
-                    await self.github.post_comment(
-                        repo, issue.number,
-                        f"⚠️ **autodev** was restarted while working on this issue.\n\n"
-                        f"Remove the `{labels.failed}` label to retry.",
-                    )
+                    interrupted = self.state.attempt_number(issue.labels) + 1
+                    if interrupted < max_attempts:
+                        logger.warning(
+                            "Recovering stale issue %s#%d, retrying (attempt %d/%d)",
+                            repo, issue.number, interrupted + 1, max_attempts,
+                        )
+                        await self.state.transition_to_retry(repo, issue.number, interrupted)
+                        await self.github.post_comment(
+                            repo, issue.number,
+                            f"⚠️ **autodev** was restarted while working on this issue. "
+                            f"It will be retried automatically "
+                            f"(attempt {interrupted + 1}/{max_attempts}).",
+                        )
+                    else:
+                        logger.warning(
+                            "Stale issue %s#%d exhausted %d attempts, marking failed",
+                            repo, issue.number, max_attempts,
+                        )
+                        await self.state.transition_to_failed(repo, issue.number)
+                        await self.github.post_comment(
+                            repo, issue.number,
+                            f"⚠️ **autodev** was restarted while working on this issue "
+                            f"and the retry limit was reached.\n\n"
+                            f"Remove the `{labels.failed}` label to retry.",
+                        )
                 return len(issues)
             except Exception as e:
                 logger.error("Error recovering stale issues for %s: %s", repo, e)

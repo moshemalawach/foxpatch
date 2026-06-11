@@ -102,3 +102,29 @@ async def test_dispatch_revision_checks_inside_task(orchestrator: Orchestrator) 
     await orchestrator._dispatch_revision(pr)
     orchestrator.revision_worker.needs_revision.assert_called_once_with(pr)
     orchestrator.revision_worker.revise_pr.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_recover_stale_issue_retries_then_fails(orchestrator: Orchestrator) -> None:
+    repo = RepoRef(owner="test-org", name="test-repo")
+
+    # First crash: no attempt label yet -> retry
+    issue = GitHubIssue(
+        repo=repo, number=42, title="Fix bug", body="",
+        labels=["autodev", "autodev:in-progress"],
+    )
+    orchestrator.github.list_issues = AsyncMock(return_value=[issue])
+    orchestrator.github.post_comment = AsyncMock()
+    orchestrator.state.transition_to_retry = AsyncMock()
+    orchestrator.state.transition_to_failed = AsyncMock()
+
+    await orchestrator._recover_stale_issues([repo])
+    orchestrator.state.transition_to_retry.assert_called_once_with(repo, 42, 1)
+    orchestrator.state.transition_to_failed.assert_not_called()
+
+    # Second crash: attempt-1 label present, max_issue_attempts=2 -> fail
+    issue.labels = ["autodev", "autodev:in-progress", "autodev:attempt-1"]
+    orchestrator.state.transition_to_retry.reset_mock()
+
+    await orchestrator._recover_stale_issues([repo])
+    orchestrator.state.transition_to_retry.assert_not_called()
+    orchestrator.state.transition_to_failed.assert_called_once_with(repo, 42)

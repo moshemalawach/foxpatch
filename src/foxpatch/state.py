@@ -43,6 +43,29 @@ class StateManager:
         logger.info("Claimed issue %s#%d (in-progress)", repo, number)
         return True
 
+    def attempt_number(self, labels: list[str]) -> int:
+        """Number of interrupted attempts recorded on the issue's labels."""
+        best = 0
+        for label in labels:
+            if label.startswith(self.labels.attempt_prefix):
+                suffix = label[len(self.labels.attempt_prefix):]
+                try:
+                    best = max(best, int(suffix))
+                except ValueError:
+                    continue
+        return best
+
+    async def transition_to_retry(self, repo: RepoRef, number: int, attempt: int) -> None:
+        """Clear in-progress and record the attempt count, making the issue
+        actionable again (used by crash recovery)."""
+        await self.github.remove_label(repo, number, self.labels.in_progress)
+        if attempt > 1:
+            await self.github.remove_label(
+                repo, number, f"{self.labels.attempt_prefix}{attempt - 1}",
+            )
+        await self.github.add_label(repo, number, f"{self.labels.attempt_prefix}{attempt}")
+        logger.info("Issue %s#%d queued for retry (attempt %d)", repo, number, attempt)
+
     async def transition_to_done(self, repo: RepoRef, number: int) -> None:
         await self.github.remove_label(repo, number, self.labels.in_progress)
         await self.github.add_label(repo, number, self.labels.done)

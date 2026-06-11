@@ -87,3 +87,21 @@ async def test_transition_to_failed(state: StateManager, repo_ref: RepoRef) -> N
     await state.transition_to_failed(repo_ref, 42)
     state.github.remove_label.assert_called_once_with(repo_ref, 42, "autodev:in-progress")
     state.github.add_label.assert_called_once_with(repo_ref, 42, "autodev:failed")
+
+def test_attempt_number(state: StateManager) -> None:
+    assert state.attempt_number([]) == 0
+    assert state.attempt_number(["autodev", "bug"]) == 0
+    assert state.attempt_number(["autodev:attempt-1"]) == 1
+    assert state.attempt_number(["autodev:attempt-1", "autodev:attempt-3"]) == 3
+    assert state.attempt_number(["autodev:attempt-garbage"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_transition_to_retry(state: StateManager, repo_ref: RepoRef) -> None:
+    state.github.remove_label = AsyncMock()
+    state.github.add_label = AsyncMock()
+    await state.transition_to_retry(repo_ref, 42, attempt=2)
+    removed = [c.args[2] for c in state.github.remove_label.call_args_list]
+    assert "autodev:in-progress" in removed
+    assert "autodev:attempt-1" in removed
+    state.github.add_label.assert_called_once_with(repo_ref, 42, "autodev:attempt-2")

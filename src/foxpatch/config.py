@@ -17,6 +17,8 @@ class LabelConfig:
     in_progress: str = "autodev:in-progress"
     done: str = "autodev:done"
     failed: str = "autodev:failed"
+    # Prefix for attempt-counter labels used by crash recovery
+    attempt_prefix: str = "autodev:attempt-"
 
 
 @dataclass
@@ -43,6 +45,9 @@ class GitHubConfig:
     labels: LabelConfig = field(default_factory=LabelConfig)
     poll_interval_issues: int = 120
     poll_interval_prs: int = 180
+    # How many times an issue interrupted by a daemon restart is retried
+    # before being marked failed.
+    max_issue_attempts: int = 2
     review: ReviewConfig = field(default_factory=ReviewConfig)
 
 
@@ -121,6 +126,7 @@ class AppConfig:
                 labels=LabelConfig(**gh.get("labels", {})),
                 poll_interval_issues=gh.get("poll_interval_issues", 120),
                 poll_interval_prs=gh.get("poll_interval_prs", 180),
+                max_issue_attempts=gh.get("max_issue_attempts", 2),
                 review=ReviewConfig(**gh.get("review", {})),
             )
 
