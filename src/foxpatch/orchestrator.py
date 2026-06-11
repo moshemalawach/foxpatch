@@ -90,40 +90,40 @@ class Orchestrator:
         logger.info("Orchestrator shutting down gracefully")
 
     async def _run_cycle(self, repos: list[RepoRef]) -> None:
-        tasks: list[asyncio.Task[None]] = []
-
-        # Poll issues
-        for repo in repos:
-            try:
-                issues = await self.github.list_issues(repo, self.config.github.labels.trigger)
-                for issue in issues:
-                    if self.state.is_actionable(issue):
-                        task = asyncio.create_task(self._dispatch_issue(issue))
-                        tasks.append(task)
-            except Exception as e:
-                logger.error("Error polling issues for %s: %s", repo, e)
-
-        # Poll PRs (reviews + revisions)
-        for repo in repos:
-            try:
-                prs = await self.github.list_prs(repo)
-                for pr in prs:
-                    if self.config.github.review.enabled:
-                        if self.review_worker.should_review(pr):
-                            task = asyncio.create_task(self._dispatch_review(pr))
-                            tasks.append(task)
-                    # Check if our own PRs need revision
-                    if await self.revision_worker.needs_revision(pr):
-                        task = asyncio.create_task(self._dispatch_revision(pr))
-                        tasks.append(task)
-            except Exception as e:
-                logger.error("Error polling PRs for %s: %s", repo, e)
+        # Poll all repos concurrently; each returns the tasks it dispatched.
+        per_repo = await asyncio.gather(*[self._poll_repo(repo) for repo in repos])
+        tasks = [task for repo_tasks in per_repo for task in repo_tasks]
 
         if tasks:
             logger.info("Dispatched %d tasks this cycle", len(tasks))
             await asyncio.gather(*tasks, return_exceptions=True)
         else:
             logger.debug("No actionable items this cycle")
+
+    async def _poll_repo(self, repo: RepoRef) -> list[asyncio.Task[None]]:
+        tasks: list[asyncio.Task[None]] = []
+
+        try:
+            issues = await self.github.list_issues(repo, self.config.github.labels.trigger)
+            for issue in issues:
+                if self.state.is_actionable(issue):
+                    tasks.append(asyncio.create_task(self._dispatch_issue(issue)))
+        except Exception as e:
+            logger.error("Error polling issues for %s: %s", repo, e)
+
+        try:
+            prs = await self.github.list_prs(repo)
+            for pr in prs:
+                if self.config.github.review.enabled and self.review_worker.should_review(pr):
+                    tasks.append(asyncio.create_task(self._dispatch_review(pr)))
+                # needs_revision hits the GitHub API, so only the cheap label
+                # check happens here; the real check runs inside the task.
+                if self.config.github.labels.trigger in pr.labels:
+                    tasks.append(asyncio.create_task(self._dispatch_revision(pr)))
+        except Exception as e:
+            logger.error("Error polling PRs for %s: %s", repo, e)
+
+        return tasks
 
     async def _dispatch_issue(self, issue: GitHubIssue) -> None:
         async with self._task_semaphore:
@@ -134,6 +134,14 @@ class Orchestrator:
             await self.review_worker.review_pr(pr)
 
     async def _dispatch_revision(self, pr: GitHubPR) -> None:
+        try:
+            if not await self.revision_worker.needs_revision(pr):
+                return
+        except Exception as e:
+            logger.error(
+                "Error checking revision need for %s#%d: %s", pr.repo, pr.number, e,
+            )
+            return
         async with self._task_semaphore:
             await self.revision_worker.revise_pr(pr)
 

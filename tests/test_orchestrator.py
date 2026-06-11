@@ -64,3 +64,41 @@ def test_handle_signal(orchestrator: Orchestrator) -> None:
     assert not orchestrator._shutdown.is_set()
     orchestrator._handle_signal()
     assert orchestrator._shutdown.is_set()
+
+@pytest.mark.asyncio
+async def test_run_cycle_polls_repos_concurrently(orchestrator: Orchestrator) -> None:
+    import asyncio
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def slow_list_issues(repo, label):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return []
+
+    orchestrator.github.list_issues = slow_list_issues
+    orchestrator.github.list_prs = AsyncMock(return_value=[])
+    repos = [RepoRef(owner="test-org", name=f"repo-{i}") for i in range(5)]
+    await orchestrator._run_cycle(repos)
+    assert max_in_flight > 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_revision_checks_inside_task(orchestrator: Orchestrator) -> None:
+    from foxpatch.models import GitHubPR
+
+    pr = GitHubPR(
+        repo=RepoRef(owner="test-org", name="test-repo"),
+        number=7, title="t", body="", author="bot",
+        head_sha="sha", head_ref="b", base_ref="main",
+        labels=["autodev"],
+    )
+    orchestrator.revision_worker.needs_revision = AsyncMock(return_value=False)
+    orchestrator.revision_worker.revise_pr = AsyncMock()
+    await orchestrator._dispatch_revision(pr)
+    orchestrator.revision_worker.needs_revision.assert_called_once_with(pr)
+    orchestrator.revision_worker.revise_pr.assert_not_called()
