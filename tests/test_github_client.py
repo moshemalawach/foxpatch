@@ -121,3 +121,24 @@ async def test_list_org_repos(client: GitHubClient) -> None:
     repos = await client.list_org_repos("test-org")
     assert len(repos) == 2
     assert repos[0].full_name == "test-org/repo-a"
+
+@pytest.mark.asyncio
+async def test_fork_repo_parses_created_fork(client: GitHubClient) -> None:
+    client._run_gh_streams = AsyncMock(return_value=("", "✓ Created fork bot-user/test-repo-1"))
+    repo = RepoRef(owner="test-org", name="test-repo")
+    assert await client.fork_repo(repo) == "bot-user/test-repo-1"
+
+
+@pytest.mark.asyncio
+async def test_fork_repo_parses_already_exists(client: GitHubClient) -> None:
+    client._run_gh_streams = AsyncMock(return_value=("", "bot-user/test-repo already exists"))
+    repo = RepoRef(owner="test-org", name="test-repo")
+    assert await client.fork_repo(repo) == "bot-user/test-repo"
+
+
+@pytest.mark.asyncio
+async def test_fork_repo_falls_back_to_user_guess(client: GitHubClient) -> None:
+    client._run_gh_streams = AsyncMock(return_value=("", "unexpected output"))
+    client.get_authenticated_user = AsyncMock(return_value="bot-user")
+    repo = RepoRef(owner="test-org", name="test-repo")
+    assert await client.fork_repo(repo) == "bot-user/test-repo"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any
 
 from .exceptions import GitHubCLIError
@@ -17,7 +18,8 @@ class GitHubClient:
     def __init__(self, dry_run: bool = False):
         self.dry_run = dry_run
 
-    async def _run_gh(self, args: list[str], check: bool = True) -> str:
+    async def _run_gh_streams(self, args: list[str], check: bool = True) -> tuple[str, str]:
+        """Run gh and return (stdout, stderr), both stripped."""
         cmd = ["gh", *args]
         logger.debug("Running: %s", " ".join(cmd))
 
@@ -37,7 +39,11 @@ class GitHubClient:
                 stderr=stderr_str,
             )
 
-        return stdout_str
+        return stdout_str, stderr_str
+
+    async def _run_gh(self, args: list[str], check: bool = True) -> str:
+        stdout, _ = await self._run_gh_streams(args, check=check)
+        return stdout
 
     async def _run_gh_json(self, args: list[str]) -> Any:
         output = await self._run_gh(args)
@@ -296,11 +302,19 @@ class GitHubClient:
         if self.dry_run:
             logger.info("[DRY RUN] Would fork %s", repo)
             return f"dry-run-fork/{repo.name}"
-        output = await self._run_gh([
+        stdout, stderr = await self._run_gh_streams([
             "repo", "fork", repo.full_name,
             "--clone=false",
         ])
-        logger.info("Forked %s: %s", repo, output)
-        # Determine fork name from authenticated user
+        logger.info("Forked %s: %s", repo, stdout or stderr)
+        # gh prints "Created fork owner/name" or "owner/name already exists"
+        # (on stderr). Parse the real name — GitHub renames forks on
+        # collision (e.g. repo-1), so guessing {user}/{repo.name} can be wrong.
+        combined = f"{stdout}\n{stderr}"
+        match = re.search(r"Created fork ([\w.-]+/[\w.-]+)", combined)
+        if not match:
+            match = re.search(r"([\w.-]+/[\w.-]+) already exists", combined)
+        if match:
+            return match.group(1)
         user = await self.get_authenticated_user()
         return f"{user}/{repo.name}"
