@@ -10,7 +10,7 @@ import pytest
 from foxpatch.claude_runner import ClaudeRunner
 from foxpatch.config import AppConfig
 from foxpatch.github_client import GitHubClient
-from foxpatch.models import ClaudeResult, GitHubPR, ReviewVerdict, Workspace
+from foxpatch.models import ClaudeResult, GitHubPR, PRReview, ReviewVerdict, Workspace
 from foxpatch.review_worker import ReviewWorker
 from foxpatch.workspace import WorkspaceManager
 
@@ -366,3 +366,80 @@ async def test_review_pr_large_diff_file_list_failure(
     result = await worker.review_pr(sample_pr)
     assert result.success is True
     worker.claude.run.assert_called_once()
+
+def test_should_review_stale_pr_skipped(worker: ReviewWorker, sample_pr: GitHubPR) -> None:
+    sample_pr.updated_at = "2020-01-01T00:00:00Z"
+    assert worker.should_review(sample_pr) is False
+
+
+def test_should_review_recent_pr(worker: ReviewWorker, sample_pr: GitHubPR) -> None:
+    from datetime import datetime, timezone
+    sample_pr.updated_at = datetime.now(timezone.utc).isoformat()
+    assert worker.should_review(sample_pr) is True
+
+
+def test_should_review_gives_up_after_failures(
+    worker: ReviewWorker, sample_pr: GitHubPR
+) -> None:
+    worker._failures[worker._review_key(sample_pr)] = worker._MAX_REVIEW_ATTEMPTS
+    assert worker.should_review(sample_pr) is False
+
+
+@pytest.mark.asyncio
+async def test_review_pr_skips_when_github_has_review(
+    worker: ReviewWorker, sample_pr: GitHubPR
+) -> None:
+    """After a restart the memory cache is empty, but GitHub knows we reviewed."""
+    worker.set_bot_user("foxpatch-bot")
+    worker.github.get_pr_reviews = AsyncMock(return_value=[
+        PRReview(author="foxpatch-bot", state="COMMENTED", body="x", commit_sha="abc123def456"),
+    ])
+    worker.github.get_pr_diff = AsyncMock()
+
+    result = await worker.review_pr(sample_pr)
+
+    assert result.success is True
+    worker.github.get_pr_diff.assert_not_called()
+    assert worker._review_key(sample_pr) in worker._reviewed
+
+
+@pytest.mark.asyncio
+async def test_review_pr_rereviews_new_head(
+    worker: ReviewWorker, sample_pr: GitHubPR, tmp_path: Path
+) -> None:
+    """A review on an older commit doesn't suppress reviewing the new head."""
+    workspace = Workspace(base_dir=tmp_path, primary_repo_dir=tmp_path / "repo")
+    (tmp_path / "repo").mkdir()
+
+    worker.set_bot_user("foxpatch-bot")
+    worker.github.get_pr_reviews = AsyncMock(return_value=[
+        PRReview(author="foxpatch-bot", state="COMMENTED", body="x", commit_sha="old_sha"),
+    ])
+    worker.github.get_pr_diff = AsyncMock(return_value="diff --git a/f b/f\n+x")
+    worker.github.post_review = AsyncMock()
+    worker.workspaces.create_review_workspace = AsyncMock(return_value=workspace)
+    worker.workspaces.cleanup = AsyncMock()
+    worker.claude.run = AsyncMock(return_value=ClaudeResult(
+        success=True,
+        output='{"verdict": "APPROVE", "summary": "ok", "comments": []}',
+    ))
+
+    result = await worker.review_pr(sample_pr)
+    assert result.success is True
+    worker.github.post_review.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_review_pr_failure_retries_then_gives_up(
+    worker: ReviewWorker, sample_pr: GitHubPR
+) -> None:
+    """Transient failures must not permanently mark the PR as reviewed."""
+    worker.github.get_pr_diff = AsyncMock(side_effect=RuntimeError("network blip"))
+
+    result = await worker.review_pr(sample_pr)
+    assert result.success is False
+    assert worker._review_key(sample_pr) not in worker._reviewed
+    assert worker.should_review(sample_pr) is True  # retry allowed
+
+    await worker.review_pr(sample_pr)
+    assert worker.should_review(sample_pr) is False  # gave up after max attempts

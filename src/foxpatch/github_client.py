@@ -88,7 +88,7 @@ class GitHubClient:
             "--state", "open",
             "--json",
             "number,title,body,author,headRefOid,headRefName,baseRefName,"
-            "labels,isDraft,reviewRequests",
+            "labels,isDraft,reviewRequests,updatedAt",
             "--limit", "50",
         ])
         prs = []
@@ -113,6 +113,7 @@ class GitHubClient:
                 labels=labels,
                 draft=item.get("isDraft", False),
                 requested_reviewers=requested_reviewers,
+                updated_at=item.get("updatedAt", ""),
             ))
         return prs
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 
 from .claude_runner import ClaudeRunner
 from .config import AppConfig
@@ -100,11 +101,16 @@ class ReviewWorker:
         self.github = github
         self.claude = claude
         self.workspaces = workspaces
-        # Tracks reviewed PRs as (repo_full_name, pr_number, head_sha).
-        # Bounded: entries are pruned when exceeding _MAX_REVIEWED_SIZE.
+        # Cache of reviewed PRs as (repo_full_name, pr_number, head_sha).
+        # This is only a cache to avoid repeated API checks: the source of
+        # truth is GitHub itself (the bot's posted reviews), so a restart
+        # loses nothing. Bounded: pruned when exceeding _MAX_REVIEWED_SIZE.
         self._reviewed: set[tuple[str, int, str]] = set()
         self._MAX_REVIEWED_SIZE = 10_000
-        self._warmed_up = False
+        # Failed review attempts per (repo, number, head_sha); after
+        # _MAX_REVIEW_ATTEMPTS we stop retrying that PR version.
+        self._failures: dict[tuple[str, int, str], int] = {}
+        self._MAX_REVIEW_ATTEMPTS = 2
         # Login of the user gh is authenticated as. When this login appears in
         # a PR's requested reviewers, treat it as a user-driven "Re-request
         # review" and force a fresh review even if already done.
@@ -115,10 +121,6 @@ class ReviewWorker:
 
     def _review_key(self, pr: GitHubPR) -> tuple[str, int, str]:
         return (pr.repo.full_name, pr.number, pr.head_sha)
-
-    def mark_seen(self, pr: GitHubPR) -> None:
-        """Mark a PR as already seen without reviewing it (used for warm-up)."""
-        self._reviewed.add(self._review_key(pr))
 
     def should_review(self, pr: GitHubPR) -> bool:
         review_cfg = self.config.github.review
@@ -140,6 +142,14 @@ class ReviewWorker:
         if labels.trigger in pr.labels:
             return False
 
+        # Skip stale PRs (no recent activity). Without this, every PR that
+        # ever went unreviewed would be picked up, e.g. on first deploy.
+        if review_cfg.max_pr_age_days > 0 and self._pr_age_days(pr) > review_cfg.max_pr_age_days:
+            return False
+
+        if self._failures.get(self._review_key(pr), 0) >= self._MAX_REVIEW_ATTEMPTS:
+            return False
+
         # User clicked "Re-request review" on our previous review — GitHub adds
         # us back to the requested reviewers. Force a fresh review even if we
         # already covered this SHA. After we post, GitHub clears the request.
@@ -159,10 +169,21 @@ class ReviewWorker:
         return True
 
     async def review_pr(self, pr: GitHubPR) -> TaskResult:
-        logger.info("Reviewing PR %s#%d: %s", pr.repo, pr.number, pr.title)
         workspace = None
 
         try:
+            # 0. The in-memory cache is empty after a restart — ask GitHub
+            # whether we already posted a review before re-reviewing.
+            if await self._already_reviewed_on_github(pr):
+                logger.info(
+                    "PR %s#%d already reviewed per GitHub state, skipping",
+                    pr.repo, pr.number,
+                )
+                self._mark_reviewed(pr)
+                return TaskResult(success=True)
+
+            logger.info("Reviewing PR %s#%d: %s", pr.repo, pr.number, pr.title)
+
             # 1. Fetch diff
             pr.diff = await self.github.get_pr_diff(pr.repo, pr.number)
             if not pr.diff.strip():
@@ -241,13 +262,44 @@ class ReviewWorker:
             return TaskResult(success=True, cost_usd=claude_result.cost_usd)
 
         except Exception as e:
-            logger.error("Failed to review PR %s#%d: %s", pr.repo, pr.number, e)
-            self._mark_reviewed(pr)
+            key = self._review_key(pr)
+            if len(self._failures) >= self._MAX_REVIEWED_SIZE:
+                self._failures.clear()
+            self._failures[key] = self._failures.get(key, 0) + 1
+            logger.error(
+                "Failed to review PR %s#%d (attempt %d/%d): %s",
+                pr.repo, pr.number, self._failures[key], self._MAX_REVIEW_ATTEMPTS, e,
+            )
             return TaskResult(success=False, error_message=str(e))
 
         finally:
             if workspace:
                 await self.workspaces.cleanup(workspace)
+
+    async def _already_reviewed_on_github(self, pr: GitHubPR) -> bool:
+        """Check GitHub for an existing review by the bot (source of truth)."""
+        if not self._bot_user:
+            return False
+        if self._bot_user in pr.requested_reviewers:
+            return False  # explicit "Re-request review" always wins
+        reviews = await self.github.get_pr_reviews(pr.repo, pr.number)
+        ours = [r for r in reviews if r.author == self._bot_user]
+        if not ours:
+            return False
+        if any(r.commit_sha == pr.head_sha for r in ours):
+            return True
+        # Reviewed an older version only
+        return not self.config.github.review.re_review_on_push
+
+    @staticmethod
+    def _pr_age_days(pr: GitHubPR) -> float:
+        if not pr.updated_at:
+            return 0.0
+        try:
+            updated = datetime.fromisoformat(pr.updated_at.replace("Z", "+00:00"))
+        except ValueError:
+            return 0.0
+        return (datetime.now(timezone.utc) - updated).total_seconds() / 86_400
 
     def _mark_reviewed(self, pr: GitHubPR) -> None:
         """Track a PR as reviewed (with bounded size)."""

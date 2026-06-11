@@ -69,11 +69,10 @@ class Orchestrator:
         # Startup: recover stale in-progress issues (e.g. from a crash/restart)
         await self._recover_stale_issues(repos)
 
-        # Warm-up: mark all existing open PRs as already seen so we don't
-        # review the entire backlog or revise all existing PRs on startup.
-        if not self.review_worker._warmed_up:
-            await self._warmup_prs(repos)
-            self.review_worker._warmed_up = True
+        # Warm-up the revision worker so existing review feedback isn't
+        # re-processed on startup. (The review worker needs no warm-up: its
+        # state is derived from the bot's posted reviews on GitHub.)
+        await self._warmup_prs(repos)
 
         if once:
             await self._run_cycle(repos)
@@ -195,7 +194,6 @@ class Orchestrator:
             try:
                 prs = await self.github.list_prs(repo)
                 for pr in prs:
-                    self.review_worker.mark_seen(pr)
                     await self.revision_worker.mark_seen(pr)
                 return len(prs)
             except Exception as e:

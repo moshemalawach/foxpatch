@@ -71,6 +71,7 @@ class GitHubPR:
     draft: bool = False
     diff: str = ""
     requested_reviewers: list[str] = field(default_factory=list)
+    updated_at: str = ""  # ISO timestamp from GitHub
 
 
 @dataclass
