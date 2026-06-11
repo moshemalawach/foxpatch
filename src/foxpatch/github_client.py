@@ -61,14 +61,22 @@ class GitHubClient:
         return [RepoRef(owner=r["owner"]["login"], name=r["name"]) for r in data]
 
     async def list_issues(self, repo: RepoRef, label: str) -> list[GitHubIssue]:
-        data = await self._run_gh_json([
-            "issue", "list",
-            "--repo", repo.full_name,
-            "--label", label,
-            "--state", "open",
-            "--json", "number,title,body,labels",
-            "--limit", "50",
-        ])
+        try:
+            data = await self._run_gh_json([
+                "issue", "list",
+                "--repo", repo.full_name,
+                "--label", label,
+                "--state", "open",
+                "--json", "number,title,body,labels",
+                "--limit", "50",
+            ])
+        except GitHubCLIError as e:
+            # Repos with issues disabled can't have actionable issues; this
+            # isn't an error worth logging every cycle.
+            if "disabled issues" in e.stderr:
+                logger.debug("%s has issues disabled, skipping", repo)
+                return []
+            raise
         issues = []
         for item in data:
             labels = [lbl["name"] for lbl in item.get("labels", [])]

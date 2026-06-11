@@ -147,3 +147,14 @@ async def test_fork_repo_falls_back_to_user_guess(client: GitHubClient) -> None:
     client.get_authenticated_user = AsyncMock(return_value="bot-user")
     repo = RepoRef(owner="test-org", name="test-repo")
     assert await client.fork_repo(repo) == "bot-user/test-repo"
+
+@pytest.mark.asyncio
+async def test_list_issues_disabled_issues_returns_empty(client: GitHubClient) -> None:
+    from foxpatch.exceptions import GitHubCLIError
+    client._run_gh_json = AsyncMock(side_effect=GitHubCLIError(
+        "gh command failed",
+        returncode=1,
+        stderr="the 'org/repo' repository has disabled issues",
+    ))
+    repo = RepoRef(owner="org", name="repo")
+    assert await client.list_issues(repo, "autodev") == []

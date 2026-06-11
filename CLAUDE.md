@@ -32,7 +32,7 @@ The venv is at `.venv/` — use `.venv/bin/python -m pytest` if not activated.
 
 ## Architecture
 
-The system has two parallel pipelines that share the same polling loop:
+The system has three parallel pipelines that share the same polling loop (repos are polled concurrently via `gather`):
 
 ### Issue Resolution Pipeline
 `orchestrator._run_cycle()` → `state.is_actionable()` → `issue_worker.process_issue()`
@@ -41,21 +41,28 @@ The system has two parallel pipelines that share the same polling loop:
 2. **Clone** — `WorkspaceManager.create_workspace()` creates a temp dir, clones the primary repo (and sibling repos from its repo group via `--add-dir`)
 3. **Run Claude** — `ClaudeRunner.run()` invokes `claude -p` with `--dangerously-skip-permissions --output-format json`, parses JSON result
 4. **Push & PR** — verifies commits exist (`git log origin/{default}..HEAD`), pushes branch, creates PR via `gh pr create`
-5. **Finalize** — transitions label to `autodev:done` or `autodev:failed`, posts comment, cleans up workspace
+5. **Finalize** — transitions label to `autodev:done` or `autodev:failed`, posts comment (PR body uses `Fixes #N` + Claude's summary), cleans up workspace
+
+Issue comments are filtered by `authorAssociation` — only OWNER/MEMBER/COLLABORATOR comments reach the prompt (prompt-injection guard, since Claude runs with `--dangerously-skip-permissions`). Issues left `in-progress` by a crash are auto-retried up to `github.max_issue_attempts` times via `autodev:attempt-N` labels.
 
 ### PR Review Pipeline
 `orchestrator._run_cycle()` → `review_worker.should_review()` → `review_worker.review_pr()`
 
-1. **Filter** — skips drafts, bot PRs, autodev's own PRs, already-reviewed PRs (tracked by `(repo, number, head_sha)` tuple in memory)
-2. **Clone** — shallow clone of PR branch
-3. **Run Claude** — review prompt with diff embedded, read-only tools only, lower budget
+1. **Filter** — skips drafts, bot PRs, autodev's own PRs, PRs older than `review.max_pr_age_days`, and already-reviewed PRs. Reviewed-state is derived from GitHub (the bot's posted reviews per head SHA) — the in-memory `(repo, number, head_sha)` set is only a cache, so restarts lose nothing and there is no startup warm-up. A "Re-request review" on GitHub forces a fresh review. Failures retry once, then give up for that head SHA.
+2. **Clone** — shallow clone + `gh pr checkout` (handles fork-based PRs)
+3. **Run Claude** — review prompt with diff embedded (large diffs go to a file in explore mode), read-only tools only, lower budget
 4. **Post** — parses Claude's JSON verdict (`APPROVE`/`REQUEST_CHANGES`/`COMMENT`), posts via `gh pr review`
 
+### PR Revision Pipeline
+`orchestrator._run_cycle()` → `revision_worker.needs_revision()` → `revision_worker.revise_pr()`
+
+Revises foxpatch's own PRs (identified by the trigger label) when a `CHANGES_REQUESTED` review exists whose commit oid equals the PR's current head. Pushing revision commits moves the head, so addressed feedback stops triggering; only a fresh review re-triggers. Derived entirely from GitHub state (no warm-up). Failures retry once per head SHA, then post a give-up comment.
+
 ### Concurrency Model
-The `Orchestrator` uses two separate `asyncio.Semaphore` instances — one for issue tasks, one for reviews — so reviews don't starve issue resolution. Dispatch is fire-and-forget via `asyncio.create_task()` + `asyncio.gather()`.
+The `Orchestrator` uses two separate `asyncio.Semaphore` instances — one for issue tasks (shared with revisions), one for reviews — so reviews don't starve issue resolution. Dispatch is fire-and-forget via `asyncio.create_task()` + `asyncio.gather()`. A `CostTracker` accumulates daily spend; when `claude.max_daily_cost_usd` > 0 and the cap is hit, dispatch pauses until midnight.
 
 ### State Machine
-GitHub labels are the sole state store. The trigger label (`autodev`) is never removed. State labels (`autodev:in-progress`, `autodev:done`, `autodev:failed`) are mutually exclusive. To retry a failed issue, remove the `autodev:failed` label.
+GitHub labels are the sole state store for issues. The trigger label (`autodev`) is never removed. State labels (`autodev:in-progress`, `autodev:done`, `autodev:failed`) are mutually exclusive; `autodev:attempt-N` counts crash-recovery retries. To retry a failed issue, remove the `autodev:failed` label. PR review/revision state is derived from GitHub itself (posted reviews and their commit oids), not labels.
 
 ### Multi-Repo Groups
 When an issue's repo belongs to a `repo_group` in config, all group repos are cloned as siblings. The primary repo gets the working branch; sibling repos are passed as `--add-dir` (read-only context). PR is created only on the primary.
