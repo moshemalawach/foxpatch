@@ -94,7 +94,7 @@ class IssueWorker:
             pr_url = await self.github.create_pr(
                 issue.repo,
                 title=f"Fix #{issue.number}: {issue.title}",
-                body=f"Automated fix for #{issue.number}.",
+                body=self._build_pr_body(issue, claude_result.output),
                 head=head,
                 base=default_branch,
                 labels=[self.config.github.labels.trigger],
@@ -130,6 +130,19 @@ class IssueWorker:
         finally:
             if workspace:
                 await self.workspaces.cleanup(workspace)
+
+    @staticmethod
+    def _build_pr_body(issue: GitHubIssue, claude_output: str, max_summary: int = 10_000) -> str:
+        """PR description: closing keyword so the issue auto-closes on merge,
+        plus Claude's final summary of what it did."""
+        parts = [f"Fixes #{issue.number}."]
+        summary = claude_output.strip()
+        if summary:
+            if len(summary) > max_summary:
+                summary = summary[:max_summary] + "\n\n_(summary truncated)_"
+            parts.extend(["", "## Summary", "", summary])
+        parts.extend(["", "---", "_Created automatically by autodev._"])
+        return "\n".join(parts)
 
     async def _has_new_commits(self, repo_dir: Path, default_branch: str = "main") -> bool:
         result = await run_git(

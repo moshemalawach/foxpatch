@@ -90,3 +90,20 @@ async def test_process_issue_claude_fails(
     result = await worker.process_issue(sample_issue)
     assert result.success is False
     worker.state.transition_to_failed.assert_called_once()
+
+def test_build_pr_body(sample_issue: GitHubIssue) -> None:
+    body = IssueWorker._build_pr_body(sample_issue, "Refactored the auth module.")
+    assert body.startswith("Fixes #42.")
+    assert "Refactored the auth module." in body
+
+
+def test_build_pr_body_truncates(sample_issue: GitHubIssue) -> None:
+    body = IssueWorker._build_pr_body(sample_issue, "x" * 20_000, max_summary=100)
+    assert "(summary truncated)" in body
+    assert len(body) < 1_000
+
+
+def test_build_pr_body_empty_summary(sample_issue: GitHubIssue) -> None:
+    body = IssueWorker._build_pr_body(sample_issue, "   ")
+    assert body.startswith("Fixes #42.")
+    assert "## Summary" not in body
