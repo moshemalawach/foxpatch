@@ -158,3 +158,16 @@ async def test_list_issues_disabled_issues_returns_empty(client: GitHubClient) -
     ))
     repo = RepoRef(owner="org", name="repo")
     assert await client.list_issues(repo, "autodev") == []
+
+@pytest.mark.asyncio
+async def test_get_pr_diff_maps_406_to_diff_too_large(client: GitHubClient) -> None:
+    from foxpatch.exceptions import DiffTooLargeError, GitHubCLIError
+    client._run_gh = AsyncMock(side_effect=GitHubCLIError(
+        "gh command failed",
+        returncode=1,
+        stderr="could not find pull request diff: HTTP 406: Sorry, the diff exceeded "
+               "the maximum number of lines (20000)",
+    ))
+    repo = RepoRef(owner="org", name="repo")
+    with pytest.raises(DiffTooLargeError):
+        await client.get_pr_diff(repo, 99)

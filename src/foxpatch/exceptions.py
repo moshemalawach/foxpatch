@@ -33,3 +33,7 @@ class ClaudeProcessError(AutoDevError):
 
 class WorkspaceError(AutoDevError):
     """Error creating or managing workspaces."""
+
+
+class DiffTooLargeError(AutoDevError):
+    """PR diff exceeds GitHub's API limit (gh pr diff returns HTTP 406)."""

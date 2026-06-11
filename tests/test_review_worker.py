@@ -443,3 +443,38 @@ async def test_review_pr_failure_retries_then_gives_up(
 
     await worker.review_pr(sample_pr)
     assert worker.should_review(sample_pr) is False  # gave up after max attempts
+
+@pytest.mark.asyncio
+async def test_review_pr_diff_too_large_generates_locally(
+    worker: ReviewWorker, sample_pr: GitHubPR, tmp_path: Path
+) -> None:
+    """GitHub 406 on huge diffs -> full clone + local merge-base diff."""
+    from foxpatch.exceptions import DiffTooLargeError
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    workspace = Workspace(base_dir=tmp_path, primary_repo_dir=repo_dir)
+    local_diff = "diff --git a/huge.py b/huge.py\n" + ("+line\n" * 25_000)
+
+    worker.config.github.review.max_diff_size = 1_000
+    worker.github.get_pr_diff = AsyncMock(side_effect=DiffTooLargeError("HTTP 406"))
+    worker.github.get_pr_files = AsyncMock(return_value=[])
+    worker.github.post_review = AsyncMock()
+    worker.workspaces.create_review_workspace = AsyncMock(return_value=workspace)
+    worker.workspaces.generate_pr_diff = AsyncMock(return_value=local_diff)
+    worker.workspaces.cleanup = AsyncMock()
+    worker.claude.run = AsyncMock(return_value=ClaudeResult(
+        success=True,
+        output='{"verdict": "COMMENT", "summary": "big PR", "comments": []}',
+    ))
+
+    result = await worker.review_pr(sample_pr)
+
+    assert result.success is True
+    worker.workspaces.create_review_workspace.assert_called_once_with(
+        sample_pr, shallow=False,
+    )
+    worker.workspaces.generate_pr_diff.assert_called_once()
+    # 25k-line diff lands in explore mode with the diff written to disk
+    assert (repo_dir / ".foxpatch_pr.diff").read_text() == local_diff
+    worker.github.post_review.assert_called_once()

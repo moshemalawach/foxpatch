@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from .claude_runner import ClaudeRunner
 from .config import AppConfig
+from .exceptions import DiffTooLargeError
 from .github_client import GitHubClient
 from .models import GitHubPR, ReviewVerdict, TaskResult
 from .prompts import build_pr_review_prompt, build_pr_review_prompt_explore
@@ -184,15 +185,30 @@ class ReviewWorker:
 
             logger.info("Reviewing PR %s#%d: %s", pr.repo, pr.number, pr.title)
 
-            # 1. Fetch diff
-            pr.diff = await self.github.get_pr_diff(pr.repo, pr.number)
-            if not pr.diff.strip():
+            # 1. Fetch diff. GitHub won't serve diffs over 20k lines — fall
+            # back to a full clone and generate the diff locally.
+            diff_too_large = False
+            try:
+                pr.diff = await self.github.get_pr_diff(pr.repo, pr.number)
+            except DiffTooLargeError:
+                logger.info(
+                    "PR %s#%d diff exceeds GitHub's API limit, generating locally",
+                    pr.repo, pr.number,
+                )
+                diff_too_large = True
+                pr.diff = ""
+
+            if not diff_too_large and not pr.diff.strip():
                 logger.info("PR %s#%d has empty diff, skipping", pr.repo, pr.number)
                 self._mark_reviewed(pr)
                 return TaskResult(success=True)
 
             # 2. Create review workspace
-            workspace = await self.workspaces.create_review_workspace(pr)
+            workspace = await self.workspaces.create_review_workspace(
+                pr, shallow=not diff_too_large,
+            )
+            if diff_too_large:
+                pr.diff = await self.workspaces.generate_pr_diff(workspace, pr)
 
             # 3. Build prompt — small diffs are embedded inline, large diffs are
             # written to a file on disk and Claude navigates the workspace itself.

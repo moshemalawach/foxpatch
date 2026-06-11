@@ -64,7 +64,7 @@ class WorkspaceManager:
             branch_name=branch_name,
         )
 
-    async def create_review_workspace(self, pr: GitHubPR) -> Workspace:
+    async def create_review_workspace(self, pr: GitHubPR, shallow: bool = True) -> Workspace:
         task_dir = Path(tempfile.mkdtemp(
             prefix=f"review-{pr.number}-",
             dir=self._ensure_base_dir(),
@@ -73,13 +73,36 @@ class WorkspaceManager:
         logger.info("Creating review workspace at %s", task_dir)
 
         repo_dir = task_dir / pr.repo.name
-        await self._clone_repo(pr.repo, repo_dir, shallow=True)
-        await self._checkout_pr(pr, repo_dir)
+        await self._clone_repo(pr.repo, repo_dir, shallow=shallow)
+        # gh pr checkout can't set up branch tracking in a shallow
+        # single-branch clone; reviews are read-only, so a detached checkout
+        # of the PR ref is enough (and works for fork PRs too).
+        fetch_args = ["fetch"]
+        if shallow:
+            fetch_args.extend(["--depth", "1"])
+        fetch_args.extend(["origin", f"pull/{pr.number}/head"])
+        await run_git(fetch_args, cwd=repo_dir, exc_type=WorkspaceError)
+        await run_git(
+            ["checkout", "--detach", "FETCH_HEAD"],
+            cwd=repo_dir, exc_type=WorkspaceError,
+        )
 
         return Workspace(
             base_dir=task_dir,
             primary_repo_dir=repo_dir,
         )
+
+    async def generate_pr_diff(self, workspace: Workspace, pr: GitHubPR) -> str:
+        """Produce the PR diff locally (merge-base of base branch vs head).
+
+        Requires a full (non-shallow) review workspace; used when GitHub's
+        API refuses to serve the diff (>20k lines).
+        """
+        result = await run_git(
+            ["diff", "--merge-base", f"origin/{pr.base_ref}", "HEAD"],
+            cwd=workspace.primary_repo_dir, exc_type=WorkspaceError,
+        )
+        return result.stdout
 
     async def create_revision_workspace(
         self,

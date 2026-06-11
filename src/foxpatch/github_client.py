@@ -8,7 +8,7 @@ import logging
 import re
 from typing import Any
 
-from .exceptions import GitHubCLIError
+from .exceptions import DiffTooLargeError, GitHubCLIError
 from .models import GitHubIssue, GitHubPR, IssueComment, PRReview, RepoRef
 
 logger = logging.getLogger(__name__)
@@ -217,10 +217,17 @@ class GitHubClient:
         return output.strip()
 
     async def get_pr_diff(self, repo: RepoRef, number: int) -> str:
-        return await self._run_gh([
-            "pr", "diff", str(number),
-            "--repo", repo.full_name,
-        ])
+        try:
+            return await self._run_gh([
+                "pr", "diff", str(number),
+                "--repo", repo.full_name,
+            ])
+        except GitHubCLIError as e:
+            # GitHub refuses to serve diffs above 20k lines (HTTP 406);
+            # callers can fall back to generating the diff locally.
+            if "diff exceeded the maximum" in e.stderr or "HTTP 406" in e.stderr:
+                raise DiffTooLargeError(str(e)) from e
+            raise
 
     async def get_pr_files(self, repo: RepoRef, number: int) -> list[dict[str, Any]]:
         """Return the list of files changed in a PR with additions/deletions counts."""
