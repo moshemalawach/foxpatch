@@ -41,13 +41,20 @@ class RepoRef:
 
 
 @dataclass
+class IssueComment:
+    author: str
+    association: str  # OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...
+    body: str
+
+
+@dataclass
 class GitHubIssue:
     repo: RepoRef
     number: int
     title: str
     body: str
     labels: list[str] = field(default_factory=list)
-    comments: list[str] = field(default_factory=list)
+    comments: list[IssueComment] = field(default_factory=list)
 
 
 @dataclass

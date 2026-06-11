@@ -60,7 +60,7 @@ def build_issue_resolution_prompt(issue: GitHubIssue) -> str:
     if issue.comments:
         parts.extend(["", "## Additional Context from Comments", ""])
         for i, comment in enumerate(issue.comments, 1):
-            parts.extend([f"### Comment {i}", "", comment, ""])
+            parts.extend([f"### Comment {i} by @{comment.author}", "", comment.body, ""])
 
     parts.extend([
         "",

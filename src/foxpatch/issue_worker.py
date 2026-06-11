@@ -17,6 +17,8 @@ from .workspace import WorkspaceManager
 
 logger = logging.getLogger(__name__)
 
+TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
 
 class IssueWorker:
     def __init__(
@@ -56,9 +58,17 @@ class IssueWorker:
             repo_group = group_result[1] if group_result else None
             workspace = await self.workspaces.create_workspace(issue, repo_group)
 
-            # 4. Fetch comments for context
+            # 4. Fetch comments for context. Only keep comments from users with
+            # write-ish access: Claude runs with --dangerously-skip-permissions,
+            # so comments from arbitrary users would be a prompt-injection vector.
             comments = await self.github.get_issue_comments(issue.repo, issue.number)
-            issue.comments = comments
+            issue.comments = [c for c in comments if c.association in TRUSTED_ASSOCIATIONS]
+            skipped = len(comments) - len(issue.comments)
+            if skipped:
+                logger.info(
+                    "Ignoring %d comment(s) from non-collaborators on %s#%d",
+                    skipped, issue.repo, issue.number,
+                )
 
             # 5. Build prompt and run Claude
             prompt = build_issue_resolution_prompt(issue)

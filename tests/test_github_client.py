@@ -105,11 +105,16 @@ async def test_create_pr_dry_run(dry_client: GitHubClient) -> None:
 @pytest.mark.asyncio
 async def test_get_issue_comments(client: GitHubClient) -> None:
     client._run_gh_json = AsyncMock(return_value={
-        "comments": [{"body": "comment 1"}, {"body": "comment 2"}]
+        "comments": [
+            {"body": "comment 1", "author": {"login": "alice"}, "authorAssociation": "MEMBER"},
+            {"body": "comment 2", "author": {"login": "bob"}, "authorAssociation": "NONE"},
+        ]
     })
     repo = RepoRef(owner="test-org", name="test-repo")
     comments = await client.get_issue_comments(repo, 42)
-    assert comments == ["comment 1", "comment 2"]
+    assert [c.body for c in comments] == ["comment 1", "comment 2"]
+    assert comments[0].author == "alice"
+    assert comments[1].association == "NONE"
 
 
 @pytest.mark.asyncio

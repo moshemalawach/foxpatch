@@ -9,7 +9,7 @@ import re
 from typing import Any
 
 from .exceptions import GitHubCLIError
-from .models import GitHubIssue, GitHubPR, PRReview, RepoRef
+from .models import GitHubIssue, GitHubPR, IssueComment, PRReview, RepoRef
 
 logger = logging.getLogger(__name__)
 
@@ -116,13 +116,20 @@ class GitHubClient:
             ))
         return prs
 
-    async def get_issue_comments(self, repo: RepoRef, number: int) -> list[str]:
+    async def get_issue_comments(self, repo: RepoRef, number: int) -> list[IssueComment]:
         data = await self._run_gh_json([
             "issue", "view", str(number),
             "--repo", repo.full_name,
             "--json", "comments",
         ])
-        return [c["body"] for c in data.get("comments", [])]
+        return [
+            IssueComment(
+                author=c.get("author", {}).get("login", ""),
+                association=c.get("authorAssociation", ""),
+                body=c.get("body", ""),
+            )
+            for c in data.get("comments", [])
+        ]
 
     async def get_issue_labels(self, repo: RepoRef, number: int) -> list[str]:
         data = await self._run_gh_json([
