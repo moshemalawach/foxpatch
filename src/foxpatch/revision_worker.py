@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 
@@ -10,6 +9,7 @@ from .claude_runner import ClaudeRunner
 from .config import AppConfig
 from .exceptions import AutoDevError
 from .github_client import GitHubClient
+from .gitutil import run_git
 from .models import GitHubPR, TaskResult
 from .prompts import build_pr_revision_prompt
 from .workspace import WorkspaceManager
@@ -154,66 +154,29 @@ class RevisionWorker:
 
         finally:
             if workspace:
-                self.workspaces.cleanup(workspace)
+                await self.workspaces.cleanup(workspace)
 
     async def _has_new_commits(self, repo_dir: Path, base_sha: str) -> bool:
         """Check if there are new commits since base_sha."""
-        proc = await asyncio.create_subprocess_exec(
-            "git", "log", f"{base_sha}..HEAD", "--oneline",
-            cwd=repo_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        return bool(stdout.decode().strip())
+        result = await run_git(["log", f"{base_sha}..HEAD", "--oneline"], cwd=repo_dir, check=False)
+        return bool(result.stdout)
 
     async def _push_revision(self, repo_dir: Path, pr: GitHubPR) -> None:
         """Push revision commits to the PR branch."""
-        # Try direct push to origin first
-        proc = await asyncio.create_subprocess_exec(
-            "git", "push", "origin", pr.head_ref,
-            cwd=repo_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode == 0:
+        result = await run_git(["push", "origin", pr.head_ref], cwd=repo_dir, check=False)
+        if result.returncode == 0:
             return
 
         logger.info(
             "Direct push failed for revision of %s#%d, trying fork: %s",
-            pr.repo, pr.number, stderr.decode().strip(),
+            pr.repo, pr.number, result.stderr,
         )
 
-        # If head_ref contains ":", it was pushed from a fork (e.g. "forkuser:branch")
-        # We need to push to the fork remote
         fork_full = await self.github.fork_repo(pr.repo)
         fork_url = f"https://github.com/{fork_full}.git"
 
         # Add fork remote if not already present
-        await self._run_git(["remote", "add", "fork", fork_url], cwd=repo_dir, check=False)
-        push_proc = await asyncio.create_subprocess_exec(
-            "git", "push", "fork", pr.head_ref,
-            cwd=repo_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, push_stderr = await push_proc.communicate()
-        if push_proc.returncode != 0:
-            raise AutoDevError(
-                f"git push revision to fork failed: {push_stderr.decode().strip()}"
-            )
-
-    async def _run_git(
-        self, args: list[str], cwd: Path, check: bool = True,
-    ) -> str:
-        proc = await asyncio.create_subprocess_exec(
-            "git", *args,
-            cwd=cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if check and proc.returncode != 0:
-            raise AutoDevError(f"git {' '.join(args)} failed: {stderr.decode().strip()}")
-        return stdout.decode().strip()
+        await run_git(["remote", "add", "fork", fork_url], cwd=repo_dir, check=False)
+        push = await run_git(["push", "fork", pr.head_ref], cwd=repo_dir, check=False)
+        if push.returncode != 0:
+            raise AutoDevError(f"git push revision to fork failed: {push.stderr}")

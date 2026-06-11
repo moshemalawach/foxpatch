@@ -247,7 +247,7 @@ class ReviewWorker:
 
         finally:
             if workspace:
-                self.workspaces.cleanup(workspace)
+                await self.workspaces.cleanup(workspace)
 
     def _mark_reviewed(self, pr: GitHubPR) -> None:
         """Track a PR as reviewed (with bounded size)."""

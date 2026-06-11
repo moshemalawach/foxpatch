@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -52,7 +52,7 @@ async def test_process_issue_success(
     worker.github.get_default_branch = AsyncMock(return_value="main")
     worker.github.create_pr = AsyncMock(return_value="https://github.com/test/pr/1")
     worker.workspaces.create_workspace = AsyncMock(return_value=workspace)
-    worker.workspaces.cleanup = MagicMock()
+    worker.workspaces.cleanup = AsyncMock()
     worker.claude.run = AsyncMock(return_value=ClaudeResult(
         success=True, output="Fixed", cost_usd=0.5, num_turns=3, duration_seconds=30,
     ))
@@ -82,7 +82,7 @@ async def test_process_issue_claude_fails(
     worker.github.post_comment = AsyncMock()
     worker.github.get_issue_comments = AsyncMock(return_value=[])
     worker.workspaces.create_workspace = AsyncMock(return_value=workspace)
-    worker.workspaces.cleanup = MagicMock()
+    worker.workspaces.cleanup = AsyncMock()
     worker.claude.run = AsyncMock(return_value=ClaudeResult(
         success=False, output="Error occurred",
     ))

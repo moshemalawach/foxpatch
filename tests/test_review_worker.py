@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -252,7 +252,7 @@ async def test_review_pr_success(
     worker.github.get_pr_diff = AsyncMock(return_value="diff --git a/file.py b/file.py\n+new line")
     worker.github.post_review = AsyncMock()
     worker.workspaces.create_review_workspace = AsyncMock(return_value=workspace)
-    worker.workspaces.cleanup = MagicMock()
+    worker.workspaces.cleanup = AsyncMock()
     worker.claude.run = AsyncMock(return_value=ClaudeResult(
         success=True,
         output='{"verdict": "APPROVE", "summary": "LGTM", "comments": []}',
@@ -286,7 +286,7 @@ async def test_review_pr_empty_body_posts_fallback(
     worker.github.get_pr_diff = AsyncMock(return_value="diff --git a/f b/f\n+x")
     worker.github.post_review = AsyncMock()
     worker.workspaces.create_review_workspace = AsyncMock(return_value=workspace)
-    worker.workspaces.cleanup = MagicMock()
+    worker.workspaces.cleanup = AsyncMock()
     worker.claude.run = AsyncMock(return_value=ClaudeResult(
         success=True, output="", cost_usd=0.0,
     ))
@@ -317,7 +317,7 @@ async def test_review_pr_large_diff_explore_mode(
     ])
     worker.github.post_review = AsyncMock()
     worker.workspaces.create_review_workspace = AsyncMock(return_value=workspace)
-    worker.workspaces.cleanup = MagicMock()
+    worker.workspaces.cleanup = AsyncMock()
     worker.claude.run = AsyncMock(return_value=ClaudeResult(
         success=True,
         output='{"verdict": "COMMENT", "summary": "Explored", "comments": []}',
@@ -356,7 +356,7 @@ async def test_review_pr_large_diff_file_list_failure(
     worker.github.get_pr_files = AsyncMock(side_effect=RuntimeError("gh failed"))
     worker.github.post_review = AsyncMock()
     worker.workspaces.create_review_workspace = AsyncMock(return_value=workspace)
-    worker.workspaces.cleanup = MagicMock()
+    worker.workspaces.cleanup = AsyncMock()
     worker.claude.run = AsyncMock(return_value=ClaudeResult(
         success=True,
         output='{"verdict": "APPROVE", "summary": "ok", "comments": []}',

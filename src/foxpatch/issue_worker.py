@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 
@@ -10,6 +9,7 @@ from .claude_runner import ClaudeRunner
 from .config import AppConfig
 from .exceptions import AutoDevError
 from .github_client import GitHubClient
+from .gitutil import run_git
 from .models import GitHubIssue, RepoRef, TaskResult
 from .prompts import build_issue_resolution_prompt
 from .state import StateManager
@@ -129,17 +129,13 @@ class IssueWorker:
 
         finally:
             if workspace:
-                self.workspaces.cleanup(workspace)
+                await self.workspaces.cleanup(workspace)
 
     async def _has_new_commits(self, repo_dir: Path, default_branch: str = "main") -> bool:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "log", f"origin/{default_branch}..HEAD", "--oneline",
-            cwd=repo_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        result = await run_git(
+            ["log", f"origin/{default_branch}..HEAD", "--oneline"], cwd=repo_dir, check=False,
         )
-        stdout, _ = await proc.communicate()
-        return bool(stdout.decode().strip())
+        return bool(result.stdout)
 
     async def _push_branch_or_fork(
         self, repo_dir: Path, branch: str, repo: RepoRef,
@@ -149,47 +145,19 @@ class IssueWorker:
         Returns the fork owner username if a fork was used, or empty string
         if pushed directly.
         """
-        # Try direct push first
-        proc = await asyncio.create_subprocess_exec(
-            "git", "push", "-u", "origin", branch,
-            cwd=repo_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode == 0:
+        result = await run_git(["push", "-u", "origin", branch], cwd=repo_dir, check=False)
+        if result.returncode == 0:
             return ""
 
-        logger.info(
-            "Direct push to %s failed, forking: %s", repo, stderr.decode().strip()
-        )
+        logger.info("Direct push to %s failed, forking: %s", repo, result.stderr)
 
         # Fork and push there instead
         fork_full = await self.github.fork_repo(repo)
         fork_url = f"https://github.com/{fork_full}.git"
 
-        # Add fork as remote and push
-        await self._run_git(["remote", "add", "fork", fork_url], cwd=repo_dir)
-        push_proc = await asyncio.create_subprocess_exec(
-            "git", "push", "-u", "fork", branch,
-            cwd=repo_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, push_stderr = await push_proc.communicate()
-        if push_proc.returncode != 0:
-            raise AutoDevError(f"git push to fork failed: {push_stderr.decode().strip()}")
+        await run_git(["remote", "add", "fork", fork_url], cwd=repo_dir)
+        push = await run_git(["push", "-u", "fork", branch], cwd=repo_dir, check=False)
+        if push.returncode != 0:
+            raise AutoDevError(f"git push to fork failed: {push.stderr}")
 
         return fork_full.split("/")[0]
-
-    async def _run_git(self, args: list[str], cwd: Path) -> str:
-        proc = await asyncio.create_subprocess_exec(
-            "git", *args,
-            cwd=cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise AutoDevError(f"git {' '.join(args)} failed: {stderr.decode().strip()}")
-        return stdout.decode().strip()

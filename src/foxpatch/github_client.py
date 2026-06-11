@@ -265,10 +265,10 @@ class GitHubClient:
             "--json", "statusCheckRollup",
         ])
         failures = []
+        bad_conclusions = {"FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"}
         for check in data.get("statusCheckRollup", []):
             conclusion = check.get("conclusion", "")
-            status = check.get("status", "")
-            if conclusion == "FAILURE" or (status == "COMPLETED" and conclusion == "FAILURE"):
+            if conclusion in bad_conclusions:
                 failures.append({
                     "name": check.get("name", check.get("context", "unknown")),
                     "conclusion": conclusion,

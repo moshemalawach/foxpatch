@@ -16,7 +16,6 @@ def test_build_command_basic() -> None:
         model="opus",
         max_turns=10,
         max_budget_usd=2.0,
-        timeout_seconds=600,
     )
     assert cmd[0] == "claude"
     assert "-p" in cmd

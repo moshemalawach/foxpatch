@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import RepoGroupConfig
 from .exceptions import WorkspaceError
+from .gitutil import run_git
 from .models import GitHubIssue, GitHubPR, RepoRef, Workspace
 
 logger = logging.getLogger(__name__)
@@ -25,20 +26,6 @@ class WorkspaceManager:
     def __init__(self, base_dir: str = "/tmp/foxpatch", dry_run: bool = False):
         self.base_dir = Path(base_dir)
         self.dry_run = dry_run
-
-    async def _run_git(self, args: list[str], cwd: Path | None = None) -> str:
-        proc = await asyncio.create_subprocess_exec(
-            "git", *args,
-            cwd=cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise WorkspaceError(
-                f"git {' '.join(args)} failed: {stderr.decode().strip()}"
-            )
-        return stdout.decode().strip()
 
     async def create_workspace(
         self,
@@ -56,7 +43,9 @@ class WorkspaceManager:
 
         primary_dir = task_dir / issue.repo.name
         await self._clone_repo(issue.repo, primary_dir)
-        await self._run_git(["checkout", "-b", branch_name], cwd=primary_dir)
+        await run_git(
+            ["checkout", "-b", branch_name], cwd=primary_dir, exc_type=WorkspaceError,
+        )
 
         additional_dirs: list[Path] = []
         if repo_group:
@@ -135,13 +124,13 @@ class WorkspaceManager:
             args.extend(["--branch", branch, "--single-branch"])
         args.extend([url, str(dest)])
         logger.info("Cloning %s to %s", repo, dest)
-        await self._run_git(args)
+        await run_git(args, exc_type=WorkspaceError)
 
     def _ensure_base_dir(self) -> Path:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         return self.base_dir
 
-    def cleanup(self, workspace: Workspace) -> None:
+    async def cleanup(self, workspace: Workspace) -> None:
         if workspace.base_dir.exists():
             logger.info("Cleaning up workspace %s", workspace.base_dir)
-            shutil.rmtree(workspace.base_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, workspace.base_dir, ignore_errors=True)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -136,7 +136,7 @@ async def test_revise_pr_success(
     revision_worker.workspaces.create_revision_workspace = AsyncMock(
         return_value=workspace,
     )
-    revision_worker.workspaces.cleanup = MagicMock()
+    revision_worker.workspaces.cleanup = AsyncMock()
     revision_worker.claude.run = AsyncMock(return_value=ClaudeResult(
         success=True, output="Fixed tests", cost_usd=1.5,
     ))
@@ -167,7 +167,7 @@ async def test_revise_pr_claude_fails(
     revision_worker.workspaces.create_revision_workspace = AsyncMock(
         return_value=workspace,
     )
-    revision_worker.workspaces.cleanup = MagicMock()
+    revision_worker.workspaces.cleanup = AsyncMock()
     revision_worker.claude.run = AsyncMock(return_value=ClaudeResult(
         success=False, output="Something went wrong",
     ))
